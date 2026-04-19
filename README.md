@@ -35,10 +35,13 @@ absolute path of your vault.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `OBSIDIAN_VAULT` | *(required)* | Absolute path to your Obsidian vault |
+| `OBSIDIAN_VAULT` | *(required)* | Absolute path to your Obsidian vault (local path, cloned from the remote if Git sync is on) |
 | `OBSIDIAN_ATTACHMENTS_DIR` | `attachments` | Vault-relative folder for generic attachments |
 | `OBSIDIAN_GRAPHS_DIR` | `attachments/graphs` | Where generated graphs are written |
 | `OBSIDIAN_GRAPH_TIMEOUT` | `30` | Seconds before graph subprocesses are killed |
+| `OBSIDIAN_VAULT_REMOTE` | *(unset)* | Optional. Git URL of your vault repo — enables the sync feature below |
+| `OBSIDIAN_AUTO_PUSH` | `true` | When sync is on, auto-commit+push after every write |
+| `OBSIDIAN_GIT_NAME` / `OBSIDIAN_GIT_EMAIL` | `Obsidian MCP` / `obsidian-mcp@local` | Identity used for auto-commits |
 
 ### Wire it into Claude Code
 
@@ -80,6 +83,7 @@ become available.
 | `delete_note(path)` | Delete a note. |
 | `read_pdf(path, page_start?, page_end?, joined=true)` | Extract PDF text. |
 | `generate_graph(code, filename?, dpi=150, timeout?, embed_in_note?, alt_text?)` | Run matplotlib code and save a figure. |
+| `sync_vault(action="both")` | Manually pull/push/both. No-op if Git sync is off. |
 
 ### Graph generation contract
 
@@ -109,6 +113,89 @@ Calling:
 
 …writes `attachments/graphs/sin-cos-YYYYMMDD-HHMMSS.png` into the vault and appends a
 `![Sin and cos](attachments/graphs/...)` line to `journal/2026-04-19.md`.
+
+## iPad-only workflow (Git-synced vault)
+
+Designed for the case where your Obsidian vault lives on an iPad and Claude Code runs
+in a cloud sandbox that can't see the iPad's filesystem. The vault becomes a Git repo
+and both sides push/pull against the same remote (e.g. a private GitHub repo).
+
+```
+┌───────────────┐                ┌─────────────┐               ┌──────────────────┐
+│ iPad Obsidian │ ◀── pull ────  │  GitHub     │ ◀── pull ──── │ Claude Code +    │
+│ + obsidian-git│ ── push  ────▶ │  (remote)   │ ── push ────▶ │ obsidian-mcp     │
+└───────────────┘                └─────────────┘               └──────────────────┘
+```
+
+### 1. Create the remote
+Create an empty private repo (GitHub, GitLab, whatever). Name it e.g. `obsidian-vault`.
+
+### 2. iPad side — obsidian-git plugin
+1. In Obsidian on iPad, *Settings → Community plugins → Browse* → install **Git** by
+   Vinzent Zhaoxiang.
+2. Generate a GitHub fine-grained Personal Access Token with `contents:read/write`
+   scope for that single repo.
+3. In the plugin settings:
+   - *Authentication → Username*: your GitHub username.
+   - *Authentication → Password / Token*: paste the PAT.
+   - *Commit-and-sync interval*: `5` minutes (tweak to taste).
+   - *Auto pull interval*: `2` minutes.
+   - *Pull on startup*: on.
+4. Run *Git: Clone an existing remote repo* once to populate the vault, or push your
+   existing vault up.
+
+### 3. Claude Code side — obsidian-mcp
+Point `OBSIDIAN_VAULT_REMOTE` at the same repo. The server will:
+
+- **Clone** into `OBSIDIAN_VAULT` the first time it starts (directory must not exist
+  or must already be the clone).
+- **Pull --rebase** at every startup.
+- **Commit + push** automatically after each note write, graph generation, or delete.
+- **Retry on conflict**: if the push is rejected, pull --rebase --autostash and push
+  again. Clean merges get rebased silently; only a truly conflicting edit on the same
+  lines will stop the server (you'll see it in the tool's `sync_error` field).
+
+Example config for Claude Code:
+
+```json
+{
+  "mcpServers": {
+    "obsidian": {
+      "command": "python",
+      "args": ["-m", "obsidian_mcp"],
+      "env": {
+        "OBSIDIAN_VAULT": "/workspace/vault",
+        "OBSIDIAN_VAULT_REMOTE": "https://github.com/<you>/obsidian-vault.git",
+        "OBSIDIAN_AUTO_PUSH": "true",
+        "OBSIDIAN_GIT_NAME": "Obsidian MCP (iPad)",
+        "OBSIDIAN_GIT_EMAIL": "mcp@you.dev"
+      }
+    }
+  }
+}
+```
+
+Authentication in the sandbox: the simplest path is to set `GITHUB_TOKEN` and let
+git-over-HTTPS pick it up via the standard credential helper, or embed the PAT
+directly in the URL (`https://<user>:<pat>@github.com/...`). Don't commit the token.
+
+### 4. `sync_vault` tool
+
+Use it from Claude if you want to force a sync mid-session:
+
+```
+sync_vault(action="pull")   # fetch changes the iPad pushed while you were working
+sync_vault(action="push")   # flush pending MCP commits
+sync_vault(action="both")   # default
+```
+
+### Keeping conflicts rare
+- On the iPad: auto-pull every 2 min, auto-commit+push every 5 min.
+- On Claude: auto-push after each write (default).
+- Don't edit the same note on both sides at the same time. If you do, the second side
+  to push has to pull-rebase — usually painless, but will fail on overlapping line
+  edits and leave a conflict marker in the working tree. In that case: open the note
+  on iPad, resolve, push, and re-run `sync_vault(action="pull")` in Claude.
 
 ## Safety notes
 

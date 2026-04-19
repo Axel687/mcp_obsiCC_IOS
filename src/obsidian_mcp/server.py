@@ -7,7 +7,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from . import graphs, notes, pdf
+from . import graphs, notes, pdf, sync
 from .notes import embed_attachment
 from .vault import VaultError
 
@@ -16,6 +16,17 @@ mcp = FastMCP("obsidian-mcp")
 
 def _err(exc: Exception) -> dict[str, Any]:
     return {"ok": False, "error": str(exc), "type": exc.__class__.__name__}
+
+
+def _with_sync(action: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        status = sync.auto_commit(action, path)
+    except VaultError as exc:
+        payload["sync_error"] = str(exc)
+    else:
+        if status not in ("auto-push off", "sync disabled", "nothing to commit"):
+            payload["sync"] = status
+    return payload
 
 
 @mcp.tool()
@@ -41,7 +52,7 @@ def write_note(path: str, content: str, overwrite: bool = False) -> dict[str, An
     """Create a note (or overwrite if `overwrite=true`). Creates parent directories as needed."""
     try:
         written = notes.write_note(path, content, overwrite=overwrite)
-        return {"ok": True, "path": written}
+        return _with_sync("write", written, {"ok": True, "path": written})
     except VaultError as exc:
         return _err(exc)
 
@@ -51,7 +62,7 @@ def append_note(path: str, content: str) -> dict[str, Any]:
     """Append text to the end of a note (creates the note if it doesn't exist)."""
     try:
         written = notes.append_note(path, content)
-        return {"ok": True, "path": written}
+        return _with_sync("append", written, {"ok": True, "path": written})
     except VaultError as exc:
         return _err(exc)
 
@@ -72,7 +83,7 @@ def insert_under_heading(
         written = notes.insert_under_heading(
             path, heading, content, create_if_missing=create_if_missing
         )
-        return {"ok": True, "path": written}
+        return _with_sync("insert", written, {"ok": True, "path": written})
     except VaultError as exc:
         return _err(exc)
 
@@ -91,9 +102,33 @@ def search_notes(query: str, regex: bool = False, max_results: int = 200) -> dic
 def delete_note(path: str) -> dict[str, Any]:
     """Delete a note from the vault."""
     try:
-        return {"ok": True, "deleted": notes.delete_note(path)}
+        deleted = notes.delete_note(path)
+        return _with_sync("delete", deleted, {"ok": True, "deleted": deleted})
     except VaultError as exc:
         return _err(exc)
+
+
+@mcp.tool()
+def sync_vault(action: str = "both") -> dict[str, Any]:
+    """Manually sync the vault with its Git remote.
+
+    `action` can be "pull", "push", or "both" (default). No-op if OBSIDIAN_VAULT_REMOTE
+    isn't configured.
+    """
+    if not sync.is_enabled():
+        return {"ok": True, "enabled": False, "note": "OBSIDIAN_VAULT_REMOTE not set"}
+    action = action.lower()
+    if action not in {"pull", "push", "both"}:
+        return _err(VaultError(f"unknown action {action!r} (expected pull|push|both)"))
+    result: dict[str, Any] = {"ok": True, "enabled": True}
+    try:
+        if action in {"pull", "both"}:
+            result["pull"] = sync.pull()
+        if action in {"push", "both"}:
+            result["push"] = sync.commit_and_push("obsidian-mcp: manual sync")
+    except VaultError as exc:
+        return _err(exc)
+    return result
 
 
 @mcp.tool()
@@ -148,12 +183,28 @@ def generate_graph(
         if embed_in_note:
             embed_attachment(embed_in_note, result.path, alt_text=alt_text)
             payload["embedded_in"] = embed_in_note
-        return payload
+        return _with_sync("graph", result.path, payload)
     except VaultError as exc:
         return _err(exc)
 
 
+def _bootstrap_sync() -> None:
+    """Clone (if needed) and pull before serving any requests."""
+    if not sync.is_enabled():
+        return
+    import sys
+
+    try:
+        status = sync.ensure_clone()
+        print(f"[obsidian-mcp] {status}", file=sys.stderr)
+        pull_status = sync.pull()
+        print(f"[obsidian-mcp] pull: {pull_status}", file=sys.stderr)
+    except VaultError as exc:
+        print(f"[obsidian-mcp] sync bootstrap failed: {exc}", file=sys.stderr)
+
+
 def main() -> None:
+    _bootstrap_sync()
     mcp.run()
 
 
