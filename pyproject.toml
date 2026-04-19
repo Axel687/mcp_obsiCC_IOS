@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "obsidian-mcp"
+version = "0.1.0"
+description = "MCP server connecting Claude Code to an Obsidian vault (notes, PDFs, Python graphs)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "axel687" }]
+dependencies = [
+    "mcp>=1.2.0",
+    "pypdf>=4.2.0",
+    "matplotlib>=3.8.0",
+]
+
+[project.scripts]
+obsidian-mcp = "obsidian_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/obsidian_mcp"]
