@@ -1,0 +1,13 @@
+# Caddy obtains and renews the HTTPS certificate for $MCP_DOMAIN automatically.
+# The domain's DNS A/AAAA record must point at the VPS, with ports 80 and 443 open.
+{$MCP_DOMAIN} {
+	encode gzip
+	reverse_proxy obsidian-mcp:8000 {
+		# Streamable HTTP uses server-sent events: don't buffer them.
+		flush_interval -1
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+}

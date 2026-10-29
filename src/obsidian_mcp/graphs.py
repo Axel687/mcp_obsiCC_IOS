@@ -38,6 +38,13 @@ def _default_filename(prefix: str = "graph") -> str:
     return f"{safe_prefix}-{stamp}.png"
 
 
+_ENV_PASSTHROUGH = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "MPLCONFIGDIR", "SYSTEMROOT")
+
+
+def _scrubbed_env() -> dict[str, str]:
+    return {k: v for k, v in os.environ.items() if k in _ENV_PASSTHROUGH}
+
+
 def _build_runner(user_code: str, out_path: Path, dpi: int) -> str:
     header = textwrap.dedent(
         f"""
@@ -104,6 +111,8 @@ def generate_graph(
             capture_output=True,
             text=True,
             timeout=effective_timeout,
+            # Don't hand secrets (git token, MCP password...) to user-supplied code.
+            env=_scrubbed_env(),
         )
     except subprocess.TimeoutExpired as exc:
         raise VaultError(

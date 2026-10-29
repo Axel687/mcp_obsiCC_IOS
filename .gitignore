@@ -34,3 +34,4 @@ settings.local.json
 # Runtime artifacts
 *.log
 tmp/
+!.env.example
