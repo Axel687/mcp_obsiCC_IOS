@@ -82,3 +82,15 @@ def test_cache_sees_edits(vault: Path) -> None:
     st = note.stat()
     os.utime(note, (st.st_atime, st.st_mtime + 5))
     assert links.notes_with_tag("nouveau") == ["Isolée.md"]
+
+
+def test_decomposed_accents_resolve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import unicodedata
+
+    monkeypatch.setenv("OBSIDIAN_VAULT", str(tmp_path))
+    nfd_name = unicodedata.normalize("NFD", "Morale - Bon vs Méchant") + ".md"
+    (tmp_path / nfd_name).write_text("x", encoding="utf-8")
+    (tmp_path / "Index.md").write_text("[[Morale - Bon vs Méchant]] #réflexion", encoding="utf-8")
+    out = links.outgoing_links("Index")
+    assert out["unresolved"] == [] and out["links"][0]["resolved"] == nfd_name
+    assert [h["source"] for h in links.backlinks(nfd_name)["backlinks"]] == ["Index.md"]

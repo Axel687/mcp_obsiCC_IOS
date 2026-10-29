@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 import threading
+import unicodedata
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import PurePosixPath
@@ -57,13 +58,19 @@ _cache: dict[str, tuple[float, ParsedNote]] = {}
 _cache_lock = threading.Lock()
 
 
+def _nfc(text: str) -> str:
+    """Accented names can be stored decomposed (NFD, typical of iOS/macOS file names)
+    while links typed in notes are composed (NFC): compare them in one form."""
+    return unicodedata.normalize("NFC", text)
+
+
 def _blank(match: re.Match[str]) -> str:
     """Replace matched text with spaces, keeping newlines so line numbers survive."""
     return re.sub(r"[^\n]", " ", match.group(0))
 
 
 def _normalise_tag(raw: str) -> str | None:
-    tag = raw.strip().lstrip("#").strip().strip("/")
+    tag = _nfc(raw).strip().lstrip("#").strip().strip("/")
     # Obsidian: a tag needs at least one non-numeric character.
     if not tag or tag.replace("/", "").isdigit():
         return None
@@ -158,17 +165,17 @@ class VaultIndex:
             for stale in set(_cache) - live:
                 del _cache[stale]
 
-        self._by_path = {p[:-3].lower(): p for p in self.notes}
+        self._by_path = {_nfc(p[:-3]).lower(): p for p in self.notes}
         self._by_name: dict[str, list[str]] = {}
         for p in self.notes:
-            self._by_name.setdefault(PurePosixPath(p).stem.lower(), []).append(p)
+            self._by_name.setdefault(_nfc(PurePosixPath(p).stem).lower(), []).append(p)
 
         for note in self.notes.values():
             for link in note.links:
                 link.resolved = self.resolve(link.target, from_note=note.path)
 
     def resolve(self, target: str, from_note: str | None = None) -> str | None:
-        t = target.strip().replace("\\", "/")
+        t = _nfc(target).strip().replace("\\", "/")
         if t.lower().endswith(".md"):
             t = t[:-3]
         # Attachments (image.png, doc.pdf) simply won't match a note and resolve to None.
@@ -176,7 +183,7 @@ class VaultIndex:
 
         if "/" in key:
             if from_note and not target.startswith("/"):
-                rel = PurePosixPath(from_note).parent / key
+                rel = PurePosixPath(_nfc(from_note)).parent / key
                 # Normalise "../" without touching the filesystem.
                 parts: list[str] = []
                 for part in rel.parts:
@@ -222,7 +229,7 @@ def list_tags(prefix: str | None = None) -> list[dict[str, Any]]:
         for tag in note.tags:
             counts[tag.lower()] += 1
             display.setdefault(tag.lower(), tag)
-    p = prefix.lstrip("#").lower() if prefix else None
+    p = _nfc(prefix).lstrip("#").lower() if prefix else None
     rows = [
         {"tag": display[k], "count": n}
         for k, n in counts.items()
@@ -233,7 +240,7 @@ def list_tags(prefix: str | None = None) -> list[dict[str, Any]]:
 
 
 def notes_with_tag(tag: str, include_nested: bool = True) -> list[str]:
-    wanted = tag.lstrip("#").lower().strip("/")
+    wanted = _nfc(tag).lstrip("#").lower().strip("/")
     if not wanted:
         raise VaultError("tag is empty")
     index = VaultIndex()
