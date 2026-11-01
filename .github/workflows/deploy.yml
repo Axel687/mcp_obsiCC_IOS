@@ -1,0 +1,46 @@
+name: Deploy
+
+# Teste puis déploie sur le VPS à chaque mise à jour de la branche principale.
+# La clé SSH (secret VPS_SSH_KEY) est limitée côté VPS à ~/deploy-obsidian-mcp.sh
+# (forced command dans authorized_keys) : elle ne peut rien lancer d'autre.
+
+on:
+  push:
+    branches: [claude/obsidian-mcp-server-IGKJW]
+  workflow_dispatch: {}
+
+concurrency: deploy
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Configurer git pour les tests
+        run: |
+          git config --global user.name "ci"
+          git config --global user.email "ci@example.com"
+      - run: pip install -e . pytest
+      - run: pytest -q
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Déployer sur le VPS
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          TARGET: ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519
+          ssh -o BatchMode=yes "$TARGET"
