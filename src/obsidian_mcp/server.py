@@ -18,7 +18,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
-from . import graphs, links, notes, pdf, sync
+from . import graphs, links, notes, pdf, sync, youtube
 from .config import ConfigError, Settings, load_settings
 from .notes import embed_attachment
 from .vault import VaultError
@@ -284,11 +284,40 @@ def generate_graph(
             return {**_err(exc), **extra}
 
 
+# -- web -----------------------------------------------------------------------------
+
+
+def youtube_transcript(
+    url: str,
+    languages: list[str] | None = None,
+    translate_to: str | None = None,
+    timestamps: bool = False,
+) -> dict[str, Any]:
+    """Get the subtitles of a YouTube video as text (manual or auto-generated).
+
+    `url` is a YouTube URL (watch, youtu.be, shorts, embed, live) or a video id.
+    `languages` is an ordered preference list of language codes (default ["fr", "en"]);
+    if none exists, any available track is used. `translate_to` (e.g. "fr") applies
+    YouTube's machine translation. `timestamps=true` returns one "[mm:ss] text" line per
+    subtitle instead of plain text. Nothing is written to the vault.
+    """
+    try:
+        return {"ok": True, **youtube.fetch(url, languages, translate_to, timestamps).as_dict()}
+    except youtube.YouTubeError as exc:
+        out = _err(exc)
+        try:
+            out["available"] = youtube.available(url)
+        except youtube.YouTubeError:
+            pass
+        return out
+
+
 # -- assembly --------------------------------------------------------------------------
 
 _READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
 _ADD = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
 _CHANGE = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False)
+_WEB = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=True)
 
 _TOOLS: list[tuple[Callable[..., Any], ToolAnnotations]] = [
     (vault_overview, _READ),
@@ -301,6 +330,7 @@ _TOOLS: list[tuple[Callable[..., Any], ToolAnnotations]] = [
     (get_links, _READ),
     (find_orphans, _READ),
     (read_pdf, _READ),
+    (youtube_transcript, _WEB),
     (append_note, _ADD),
     (insert_under_heading, _ADD),
     (write_note, _CHANGE),
