@@ -37,10 +37,16 @@ jobs:
         env:
           SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
           KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
-          TARGET: ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
         run: |
+          # Les secrets collés depuis un téléphone peuvent contenir des espaces,
+          # des retours chariot ou un retour à la ligne final : on les nettoie.
+          user=$(printf '%s' "$VPS_USER" | tr -d '[:space:]')
+          host=$(printf '%s' "$VPS_HOST" | tr -d '[:space:]')
           mkdir -p ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
-          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' "$SSH_KEY" | tr -d '\r' | sed 's/[[:space:]]*$//' > ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" | tr -d '\r' > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/id_ed25519
-          ssh -o BatchMode=yes "$TARGET"
+          ssh-keygen -y -f ~/.ssh/id_ed25519 > /dev/null || { echo "VPS_SSH_KEY n'est pas une clé privée valide"; exit 1; }
+          ssh -o BatchMode=yes "$user@$host"
