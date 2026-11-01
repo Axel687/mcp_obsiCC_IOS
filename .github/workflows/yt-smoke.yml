@@ -1,0 +1,25 @@
+name: yt-smoke
+on:
+  push:
+    branches: [claude/yt-smoke]
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -q -e .
+      - run: |
+          python - <<'PY'
+          from obsidian_mcp.server import youtube_transcript
+          for url, kw in [
+              ("https://www.youtube.com/watch?v=NF1pwjL9-DE", {}),
+              ("https://youtu.be/NF1pwjL9-DE", {"translate_to": "fr", "timestamps": True}),
+              ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {}),
+              ("https://vimeo.com/123", {}),
+          ]:
+              r = youtube_transcript(url, **kw)
+              print(url, kw, {k: v for k, v in r.items() if k != "text"})
+              print("   text:", (r.get("text") or "")[:200].replace("\n", " | "))
+          PY
