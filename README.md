@@ -78,8 +78,8 @@ the `state` volume, so Claude doesn't need to reconnect after a redeploy.
   `/authorize`. The server shows a password page; on success it hands Claude a one-time
   code exchanged for an access token (1 hour) and a refresh token (30 days, rotated on
   every use).
-- Only redirects to claude.ai/claude.com and to loopback addresses (Claude Code) are
-  accepted (`OBSIDIAN_MCP_ALLOWED_REDIRECTS` to change).
+- Only redirects to claude.ai/claude.com, to chatgpt.com (ChatGPT developer mode) and
+  to loopback addresses (Claude Code) are accepted (`OBSIDIAN_MCP_ALLOWED_REDIRECTS` to change).
 - After 5 wrong passwords in 15 minutes, the login is locked for 15 minutes.
 - Tokens are stored hashed (SHA-256) in `/data/state/oauth.json`. Deleting that file
   logs every client out.
@@ -142,7 +142,7 @@ locally, e.g. from a cloud sandbox.
 | `OBSIDIAN_MCP_TOKEN` | *(unset)* | HTTP mode: optional static bearer token (32+ characters) |
 | `OBSIDIAN_MCP_HOST` / `OBSIDIAN_MCP_PORT` | `0.0.0.0` / `8000` | HTTP listen address |
 | `OBSIDIAN_MCP_STATE_DIR` | `~/.local/state/obsidian-mcp` | Where OAuth clients and tokens are stored |
-| `OBSIDIAN_MCP_ALLOWED_REDIRECTS` | claude.ai, claude.com, loopback | Comma-separated OAuth redirect allowlist |
+| `OBSIDIAN_MCP_ALLOWED_REDIRECTS` | claude.ai, claude.com, chatgpt.com, loopback | Comma-separated OAuth redirect allowlist |
 | `OBSIDIAN_ENABLE_GRAPHS` | on in stdio, off in http | Expose `generate_graph` |
 | `OBSIDIAN_VAULT_REMOTE` | *(unset)* | Git URL of the vault repo — enables sync |
 | `OBSIDIAN_GIT_TOKEN` | *(unset)* | Token for HTTPS git auth (e.g. GitHub fine-grained PAT) |

@@ -20,6 +20,9 @@ DEFAULT_ALLOWED_REDIRECTS = (
     # claude.ai web, desktop and mobile apps (connectors are brokered by Anthropic).
     "https://claude.ai/api/mcp/auth_callback",
     "https://claude.com/api/mcp/auth_callback",
+    # ChatGPT apps / connectors in developer mode (callback path has changed over time,
+    # so the whole host is allowed).
+    "https://chatgpt.com",
     # Claude Code and other local MCP clients use a loopback callback on a random port.
     "http://localhost",
     "http://127.0.0.1",
