@@ -19,8 +19,8 @@ Code connect with a plain ``Authorization`` header.
 Security choices:
 
 - Tokens are stored as SHA-256 hashes, so a leaked state file does not leak tokens.
-- Redirect URIs are restricted to an allowlist (claude.ai/claude.com callbacks and
-  loopback by default), checked at registration and again at authorization.
+- Redirect URIs are restricted to an allowlist (claude.ai/claude.com callbacks,
+  chatgpt.com and loopback by default), checked at registration and again at authorization.
 - Failed logins are throttled: after 5 failures in 15 minutes the login is locked for
   15 minutes.
 """

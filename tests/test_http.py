@@ -233,6 +233,27 @@ def test_foreign_redirects_are_refused(setup) -> None:
     assert status == 400
 
 
+def test_chatgpt_can_register_and_authorize(setup) -> None:
+    base = setup["base"]
+    callback = "https://chatgpt.com/connector_platform_oauth_redirect"
+    status, _, body = http("POST", base + "/register", data={
+        "client_name": "ChatGPT", "redirect_uris": [callback],
+        "grant_types": ["authorization_code", "refresh_token"], "response_types": ["code"],
+        "token_endpoint_auth_method": "none"})
+    assert status == 201, body
+    client_id = json.loads(body)["client_id"]
+    verifier = secrets.token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    query = urllib.parse.urlencode({
+        "response_type": "code", "client_id": client_id, "redirect_uri": callback,
+        "code_challenge": challenge, "code_challenge_method": "S256", "state": "abc",
+        "resource": base + "/mcp",
+    })
+    status, headers, _ = http("GET", f"{base}/authorize?{query}")
+    assert status == 302
+    assert headers["location"].startswith(base + "/login?txn=")
+
+
 def test_full_flow_and_sync(setup) -> None:
     base, phone = setup["base"], setup["phone"]
     tokens = oauth_login(base)
