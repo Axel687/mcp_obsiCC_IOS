@@ -100,3 +100,30 @@ def test_blocked_explains_proxy(fake) -> None:
     fake(RequestBlocked("NF1pwjL9-DE"))
     out = server.youtube_transcript("NF1pwjL9-DE")
     assert out["ok"] is False and youtube.PROXY_ENV in out["error"]
+
+
+def test_blocked_without_proxy_says_none_configured(fake, monkeypatch) -> None:
+    monkeypatch.delenv(youtube.PROXY_ENV, raising=False)
+    fake(RequestBlocked("NF1pwjL9-DE"))
+    out = server.youtube_transcript("NF1pwjL9-DE")
+    assert "no proxy is configured" in out["error"]
+
+
+def test_proxy_retries_a_block_then_succeeds(monkeypatch) -> None:
+    monkeypatch.setenv(youtube.PROXY_ENV, "http://u:p@proxy:1")
+    answers = [RequestBlocked("NF1pwjL9-DE"), RequestBlocked("NF1pwjL9-DE"), [FakeTrack("en", False)]]
+    monkeypatch.setattr(youtube, "_api", lambda: FakeApi(answers.pop(0)))
+    out = server.youtube_transcript("NF1pwjL9-DE")
+    assert out["ok"] and out["language_code"] == "en" and answers == []
+
+
+def test_proxy_block_after_all_attempts_says_proxy_used(monkeypatch) -> None:
+    monkeypatch.setenv(youtube.PROXY_ENV, "http://u:p@proxy:1")
+    calls = []
+    def api():
+        calls.append(1)
+        return FakeApi(RequestBlocked("NF1pwjL9-DE"))
+    monkeypatch.setattr(youtube, "_api", api)
+    out = server.youtube_transcript("NF1pwjL9-DE")
+    assert out["ok"] is False and "even through the proxy" in out["error"]
+    assert len(calls) == youtube.PROXY_ATTEMPTS
