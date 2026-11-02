@@ -305,6 +305,8 @@ def youtube_transcript(
         return {"ok": True, **youtube.fetch(url, languages, translate_to, timestamps).as_dict()}
     except youtube.YouTubeError as exc:
         out = _err(exc)
+        if exc.blocked:  # listing the tracks would be blocked too (and cost proxy traffic)
+            return out
         try:
             out["available"] = youtube.available(url)
         except youtube.YouTubeError:

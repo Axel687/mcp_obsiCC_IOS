@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable, TypeVar
 from urllib.parse import parse_qs, urlparse
 
 from youtube_transcript_api import (
@@ -24,12 +24,19 @@ from youtube_transcript_api import (
 from youtube_transcript_api.proxies import GenericProxyConfig
 
 PROXY_ENV = "OBSIDIAN_YOUTUBE_PROXY"
+# With a rotating proxy, each new connection gets a new IP: retry a block a few times.
+PROXY_ATTEMPTS = 3
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _YOUTUBE_HOSTS = {"youtube.com", "m.youtube.com", "music.youtube.com", "youtube-nocookie.com"}
 
 
+T = TypeVar("T")
+
+
 class YouTubeError(Exception):
-    pass
+    def __init__(self, message: str, blocked: bool = False) -> None:
+        super().__init__(message)
+        self.blocked = blocked
 
 
 def video_id(url_or_id: str) -> str:
@@ -54,8 +61,12 @@ def video_id(url_or_id: str) -> str:
     raise YouTubeError(f"not a YouTube video URL or id: {url_or_id!r}")
 
 
+def _proxy() -> str:
+    return os.environ.get(PROXY_ENV, "").strip()
+
+
 def _api() -> YouTubeTranscriptApi:
-    proxy = os.environ.get(PROXY_ENV, "").strip()
+    proxy = _proxy()
     if proxy:
         return YouTubeTranscriptApi(proxy_config=GenericProxyConfig(http_url=proxy, https_url=proxy))
     return YouTubeTranscriptApi()
@@ -94,10 +105,7 @@ class Transcript:
 def available(url_or_id: str) -> list[dict[str, Any]]:
     """Subtitle tracks a video offers."""
     vid = video_id(url_or_id)
-    try:
-        tracks = _api().list(vid)
-    except YouTubeTranscriptApiException as exc:
-        raise YouTubeError(_explain(exc)) from exc
+    tracks = _with_retries(lambda: _api().list(vid))
     return [
         {
             "language": t.language,
@@ -122,23 +130,7 @@ def fetch(
     """
     vid = video_id(url_or_id)
     wanted = languages or ["fr", "en"]
-    try:
-        tracks = _api().list(vid)
-        try:
-            track = tracks.find_transcript(wanted)
-        except NoTranscriptFound:
-            everything = sorted(tracks, key=lambda t: t.is_generated)
-            if not everything:
-                raise
-            track = everything[0]
-        source_code = track.language_code
-        translated_from = None
-        if translate_to and translate_to != source_code:
-            track = track.translate(translate_to)
-            translated_from = source_code
-        fetched = track.fetch()
-    except YouTubeTranscriptApiException as exc:
-        raise YouTubeError(_explain(exc)) from exc
+    fetched, translated_from = _with_retries(lambda: _fetch_once(vid, wanted, translate_to))
 
     lines: list[str] = []
     for snip in fetched.snippets:
@@ -158,11 +150,49 @@ def fetch(
     )
 
 
-def _explain(exc: Exception) -> str:
+def _fetch_once(vid: str, wanted: list[str], translate_to: str | None) -> tuple[Any, str | None]:
+    tracks = _api().list(vid)
+    try:
+        track = tracks.find_transcript(wanted)
+    except NoTranscriptFound:
+        everything = sorted(tracks, key=lambda t: t.is_generated)
+        if not everything:
+            raise
+        track = everything[0]
+    source_code = track.language_code
+    translated_from = None
+    if translate_to and translate_to != source_code:
+        track = track.translate(translate_to)
+        translated_from = source_code
+    return track.fetch(), translated_from
+
+
+def _with_retries(call: Callable[[], T]) -> T:
+    """Run `call`; behind a proxy, retry a YouTube block (a rotating proxy changes IP)."""
+    attempts = PROXY_ATTEMPTS if _proxy() else 1
+    for attempt in range(1, attempts + 1):
+        try:
+            return call()
+        except (IpBlocked, RequestBlocked) as exc:
+            if attempt == attempts:
+                raise YouTubeError(_explain(exc, attempts), blocked=True) from exc
+        except YouTubeTranscriptApiException as exc:
+            raise YouTubeError(_explain(exc)) from exc
+    raise AssertionError("unreachable")
+
+
+def _explain(exc: Exception, attempts: int = 1) -> str:
     first = str(exc).strip().splitlines()[0] if str(exc).strip() else ""
     if isinstance(exc, (IpBlocked, RequestBlocked)):
+        name = exc.__class__.__name__
+        if _proxy():
+            return (
+                f"YouTube blocked the request ({name}) even through the proxy set in {PROXY_ENV} "
+                f"({attempts} attempts). Check that the proxy works and rotates its IP, "
+                "or try again later."
+            )
         return (
-            f"YouTube blocked the request from this server ({exc.__class__.__name__}). "
+            f"YouTube blocked the request from this server ({name}); no proxy is configured. "
             f"Cloud IPs are often blocked; set {PROXY_ENV} to route requests through a proxy."
         )
     if isinstance(exc, TranscriptsDisabled):
