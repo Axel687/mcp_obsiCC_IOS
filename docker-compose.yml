@@ -23,6 +23,9 @@ services:
       - "443:443"
     environment:
       MCP_DOMAIN: ${MCP_DOMAIN}
+    # "edge" is shared with services from other stacks (revolut-mcp), never with
+    # obsidian-mcp, so those services and this one cannot reach each other.
+    networks: [default, edge]
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy-sites:/etc/caddy/sites:ro
@@ -34,3 +37,7 @@ volumes:
   state:
   caddy_data:
   caddy_config:
+
+networks:
+  edge:
+    name: mcp_edge
