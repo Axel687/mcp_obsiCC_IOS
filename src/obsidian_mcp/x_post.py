@@ -4,7 +4,8 @@ Two sources, tried in order:
 
 1. FxTwitter (``api.fxtwitter.com``), the open-source service behind the fixed X
    previews on Discord. It returns the full text, long posts included, plus author,
-   date, counters, media links and the quoted post. It is a volunteer-run third party:
+   date, counters, media links and the quoted post. X articles come back in full,
+   converted to Markdown (headings, lists, links, image placeholders). It is a volunteer-run third party:
    it can be down or cut off by X.
 2. X's official oEmbed endpoint (``publish.x.com/oembed``), used to embed posts on web
    pages. Always available but only gives the text, and long posts are cut after
@@ -85,6 +86,114 @@ def _media(tweet: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+_BLOCK_PREFIX = {
+    "header-one": "# ", "header-two": "## ", "header-three": "### ",
+    "unordered-list-item": "- ", "ordered-list-item": "1. ", "blockquote": "> ",
+}
+
+
+def _entity_map(raw: Any) -> dict[str, dict[str, Any]]:
+    """Draft.js entityMap, either {key: entity} or [{"key": k, "value": entity}]."""
+    if isinstance(raw, dict):
+        return {str(k): v for k, v in raw.items() if isinstance(v, dict)}
+    out: dict[str, dict[str, Any]] = {}
+    for item in raw or []:
+        if isinstance(item, dict) and isinstance(item.get("value"), dict):
+            out[str(item.get("key"))] = item["value"]
+    return out
+
+
+def _media_urls(article: dict[str, Any]) -> dict[str, str]:
+    """media id -> image URL, from whatever media lists the article carries."""
+    urls: dict[str, str] = {}
+    candidates = list(article.get("media_entities") or [])
+    if isinstance(article.get("cover_media"), dict):
+        candidates.append(article["cover_media"])
+    for m in candidates:
+        if not isinstance(m, dict):
+            continue
+        mid = str(m.get("media_id") or m.get("id") or "")
+        info = m.get("media_info") or {}
+        url = info.get("original_img_url") or m.get("url") or m.get("media_url_https")
+        if mid and url:
+            urls[mid] = url
+    return urls
+
+
+def _utf16_slice(text: str, offset: int, length: int) -> tuple[str, str, str]:
+    """Split text around a Draft.js range (offsets count UTF-16 code units)."""
+    raw = text.encode("utf-16-le")
+    a, b = 2 * offset, 2 * (offset + length)
+    dec = lambda x: x.decode("utf-16-le", errors="ignore")  # noqa: E731
+    return dec(raw[:a]), dec(raw[a:b]), dec(raw[b:])
+
+
+def _with_links(text: str, ranges: list[dict[str, Any]], entities: dict[str, dict[str, Any]]) -> str:
+    links = []
+    for r in ranges or []:
+        ent = entities.get(str(r.get("key")), {})
+        url = (ent.get("data") or {}).get("url")
+        if ent.get("type") == "LINK" and url:
+            links.append((int(r.get("offset", 0)), int(r.get("length", 0)), url))
+    for offset, length, url in sorted(links, reverse=True):  # right to left keeps offsets valid
+        before, label, after = _utf16_slice(text, offset, length)
+        text = f"{before}[{label}]({url}){after}"
+    return text
+
+
+def _media_line(block: dict[str, Any], entities: dict[str, dict[str, Any]], urls: dict[str, str]) -> str:
+    lines = []
+    for r in block.get("entityRanges") or []:
+        ent = entities.get(str(r.get("key")), {})
+        data = ent.get("data") or {}
+        if ent.get("type") == "MEDIA":
+            caption = data.get("caption") or ""
+            for item in data.get("mediaItems") or [{}]:
+                url = urls.get(str(item.get("mediaId", "")), "")
+                lines.append(f"![{caption}]({url})" if url else f"[image{': ' + caption if caption else ''}]")
+        elif ent.get("type") in {"TWEET", "POST"} and data.get("tweetId"):
+            lines.append(f"[post cité : https://x.com/i/status/{data['tweetId']}]")
+        elif data.get("url"):
+            lines.append(f"[{ent.get('type', 'lien').lower()} : {data['url']}]")
+    return "\n".join(lines)
+
+
+def _article(article: dict[str, Any]) -> dict[str, Any]:
+    """Turn an X article (Draft.js blocks) into Markdown text."""
+    out: dict[str, Any] = {
+        "title": article.get("title", ""),
+        "preview_text": article.get("preview_text", ""),
+    }
+    cover = (article.get("cover_media") or {}).get("media_info", {}).get("original_img_url")
+    if cover:
+        out["cover_image"] = cover
+    content = article.get("content") or {}
+    blocks = content.get("blocks") or []
+    if not blocks:
+        return out
+    entities = _entity_map(content.get("entityMap"))
+    urls = _media_urls(article)
+    parts: list[str] = []
+    images = 0
+    for block in blocks:
+        kind = block.get("type", "unstyled")
+        if kind == "atomic":
+            line = _media_line(block, entities, urls)
+            images += line.count("![") + line.count("[image")
+        else:
+            text = _with_links(block.get("text", ""), block.get("entityRanges") or [], entities)
+            if kind == "code-block":
+                line = f"```\n{text}\n```"
+            else:
+                line = _BLOCK_PREFIX.get(kind, "") + text
+        if line.strip():
+            parts.append(line)
+    out["text"] = "\n\n".join(parts)
+    out["blocks"] = len(blocks)
+    out["images"] = images
+    return out
+
+
 def _from_fx(tweet: dict[str, Any], depth: int = 0) -> dict[str, Any]:
     author = tweet.get("author") or {}
     post: dict[str, Any] = {
@@ -114,10 +223,7 @@ def _from_fx(tweet: dict[str, Any], depth: int = 0) -> dict[str, Any]:
         ]
     article = tweet.get("article")
     if article:
-        post["article"] = {
-            "title": article.get("title", ""),
-            "preview_text": article.get("preview_text", ""),
-        }
+        post["article"] = _article(article)
     note = tweet.get("community_note")
     if note:
         post["community_note"] = note.get("text", "") if isinstance(note, dict) else str(note)
