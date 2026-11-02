@@ -138,3 +138,64 @@ def test_both_sources_down(web) -> None:
 def test_bad_link() -> None:
     out = server.read_x_post("https://example.com/whatever")
     assert out["ok"] is False and "not an X post link" in out["error"]
+
+
+ARTICLE = {
+    "id": "2117189870661554176",
+    "title": "Claude SEO Second Brain: The Complete Guide",
+    "preview_text": "I RUN ALL OF OUR SEO OUT OF THIS SETUP. ",
+    "cover_media": {
+        "id": "QXBp", "media_id": "2117190345209372672",
+        "media_info": {"__typename": "ApiImage", "original_img_url": "https://pbs.twimg.com/media/cover.jpg"},
+    },
+    "media_entities": [
+        {"media_id": "2117191116013363200", "media_info": {"original_img_url": "https://pbs.twimg.com/media/fig.jpg"}},
+    ],
+    "content": {
+        "blocks": [
+            {"key": "a", "type": "unstyled", "text": "I RUN ALL OF OUR SEO OUT OF THIS SETUP.", "entityRanges": [], "data": {}},
+            {"key": "b", "type": "header-two", "text": "Why 🧠 memory", "entityRanges": [], "data": {}},
+            {"key": "c", "type": "unstyled", "text": "😀 Read the docs now.",
+             "entityRanges": [{"key": 3, "offset": 8, "length": 3}], "data": {}},
+            {"key": "d", "type": "atomic", "text": " ", "entityRanges": [{"key": 8, "offset": 0, "length": 1}], "data": {}},
+            {"key": "e", "type": "atomic", "text": " ", "entityRanges": [{"key": 12, "offset": 0, "length": 1}], "data": {}},
+            {"key": "f", "type": "unordered-list-item", "text": "first point", "entityRanges": [], "data": {}},
+        ],
+        "entityMap": [
+            {"key": "3", "value": {"type": "LINK", "data": {"url": "https://docs.example.com"}}},
+            {"key": "8", "value": {"type": "MEDIA", "data": {
+                "caption": "To get similar results for your business",
+                "mediaItems": [{"mediaId": "2117191116013363200"}]}}},
+            {"key": "12", "value": {"type": "MEDIA", "data": {"mediaItems": [{"mediaId": "999"}]}}},
+        ],
+    },
+}
+
+
+def test_article_is_read_in_full(web) -> None:
+    tweet = dict(FX["tweet"], text="", article=ARTICLE)
+    tweet.pop("quote")
+    web(FakeResp(200, {"code": 200, "tweet": tweet}))
+    art = server.read_x_post("https://x.com/NicholasDulait/status/2117194945668714566?s=20")["article"]
+    assert art["title"].startswith("Claude SEO Second Brain")
+    assert art["cover_image"] == "https://pbs.twimg.com/media/cover.jpg"
+    assert art["blocks"] == 6 and art["images"] == 2
+    assert art["text"] == "\n\n".join([
+        "I RUN ALL OF OUR SEO OUT OF THIS SETUP.",
+        "## Why 🧠 memory",
+        "😀 Read [the](https://docs.example.com) docs now.",
+        "![To get similar results for your business](https://pbs.twimg.com/media/fig.jpg)",
+        "[image]",
+        "- first point",
+    ])
+
+
+def test_article_entity_map_as_dict() -> None:
+    art = x_post._article({
+        "title": "t",
+        "content": {
+            "blocks": [{"type": "unstyled", "text": "see here", "entityRanges": [{"key": 0, "offset": 4, "length": 4}]}],
+            "entityMap": {"0": {"type": "LINK", "data": {"url": "https://a.b"}}},
+        },
+    })
+    assert art["text"] == "see [here](https://a.b)"
