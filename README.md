@@ -17,6 +17,9 @@ the Claude iPhone/iPad/Android apps through a self-hosted server.
   as text (manual or auto-generated, optional translation and timestamps).
 - **YouTube search** — `youtube_search_videos` finds videos with the official YouTube
   Data API (filters: language, date, duration, channel) and returns their details.
+- **X posts** — `read_x_post` reads one public post on X from its link (full text of
+  long posts, author, date, stats, quoted post, media links) via FxTwitter, with X's
+  oEmbed as a fallback. No X account or API key.
 - **Graphs** — run matplotlib code and save the figure into the vault (local mode only by
   default).
 

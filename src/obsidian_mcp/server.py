@@ -18,7 +18,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
-from . import graphs, links, notes, pdf, sync, youtube, youtube_search
+from . import graphs, links, notes, pdf, sync, x_post, youtube, youtube_search
 from .config import ConfigError, Settings, load_settings
 from .notes import embed_attachment
 from .vault import VaultError
@@ -342,6 +342,21 @@ def youtube_search_videos(
         return _err(exc)
 
 
+def read_x_post(url: str) -> dict[str, Any]:
+    """Read one public post on X (Twitter) from its link: full text, author, date, stats.
+
+    `url` is a post link (x.com, twitter.com, fxtwitter.com...; tracking parameters are
+    fine) or a bare post id. Uses FxTwitter, which returns long posts in full, plus the
+    quoted post, media links, poll and community note; falls back to X's oEmbed, which
+    only has the text and cuts long posts (`truncated: true`). No X account is used.
+    Protected and deleted posts cannot be read. Nothing is written to the vault.
+    """
+    try:
+        return {"ok": True, **x_post.fetch(url)}
+    except x_post.XPostError as exc:
+        return _err(exc)
+
+
 # -- assembly --------------------------------------------------------------------------
 
 _READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
@@ -362,6 +377,7 @@ _TOOLS: list[tuple[Callable[..., Any], ToolAnnotations]] = [
     (read_pdf, _READ),
     (youtube_transcript, _WEB),
     (youtube_search_videos, _WEB),
+    (read_x_post, _WEB),
     (append_note, _ADD),
     (insert_under_heading, _ADD),
     (write_note, _CHANGE),
