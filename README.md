@@ -15,6 +15,8 @@ the Claude iPhone/iPad/Android apps through a self-hosted server.
 - **PDFs** — extract text from any PDF inside the vault, with optional page ranges.
 - **YouTube subtitles** — `youtube_transcript` returns the subtitles of any YouTube video
   as text (manual or auto-generated, optional translation and timestamps).
+- **YouTube search** — `youtube_search_videos` finds videos with the official YouTube
+  Data API (filters: language, date, duration, channel) and returns their details.
 - **Graphs** — run matplotlib code and save the figure into the vault (local mode only by
   default).
 
@@ -147,6 +149,7 @@ locally, e.g. from a cloud sandbox.
 | `OBSIDIAN_MCP_ALLOWED_REDIRECTS` | claude.ai, claude.com, chatgpt.com, loopback | Comma-separated OAuth redirect allowlist |
 | `OBSIDIAN_ENABLE_GRAPHS` | on in stdio, off in http | Expose `generate_graph` |
 | `OBSIDIAN_YOUTUBE_PROXY` | *(unset)* | Proxy URL for `youtube_transcript` (YouTube often blocks cloud IPs) |
+| `OBSIDIAN_YOUTUBE_API_KEY` | *(unset)* | YouTube Data API v3 key for `youtube_search_videos` |
 | `OBSIDIAN_VAULT_REMOTE` | *(unset)* | Git URL of the vault repo — enables sync |
 | `OBSIDIAN_GIT_TOKEN` | *(unset)* | Token for HTTPS git auth (e.g. GitHub fine-grained PAT) |
 | `OBSIDIAN_PULL_INTERVAL` | `30` | Min seconds between automatic pulls; `0` = every call, negative = never |
