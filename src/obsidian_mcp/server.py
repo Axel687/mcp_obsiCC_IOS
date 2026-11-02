@@ -18,7 +18,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
-from . import graphs, links, notes, pdf, sync, youtube
+from . import graphs, links, notes, pdf, sync, youtube, youtube_search
 from .config import ConfigError, Settings, load_settings
 from .notes import embed_attachment
 from .vault import VaultError
@@ -314,6 +314,34 @@ def youtube_transcript(
         return out
 
 
+def youtube_search_videos(
+    query: str = "",
+    max_results: int = 8,
+    language: str | None = None,
+    order: str = "relevance",
+    published_after: str | None = None,
+    duration: str | None = None,
+    channel: str | None = None,
+) -> dict[str, Any]:
+    """Search YouTube videos (official YouTube Data API). Pair with youtube_transcript.
+
+    `query` is free text. `language` (e.g. "fr") favours results in that language.
+    `order`: relevance (default), date, viewCount or rating. `published_after` is a date
+    like "2025-01-31". `duration`: short (<4 min), medium (4-20 min) or long (>20 min).
+    `channel` is a handle ("@Computerphile") or channel id: with an empty query and
+    order="date" it lists the channel's latest videos. Returns title, channel, date,
+    duration, views, likes, whether manual captions exist, and the description.
+    About 100 searches a day fit in the free quota: search deliberately.
+    """
+    try:
+        results = youtube_search.search(
+            query, max_results, language, order, published_after, duration, channel
+        )
+        return {"ok": True, "count": len(results), "results": results}
+    except youtube_search.SearchError as exc:
+        return _err(exc)
+
+
 # -- assembly --------------------------------------------------------------------------
 
 _READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
@@ -333,6 +361,7 @@ _TOOLS: list[tuple[Callable[..., Any], ToolAnnotations]] = [
     (find_orphans, _READ),
     (read_pdf, _READ),
     (youtube_transcript, _WEB),
+    (youtube_search_videos, _WEB),
     (append_note, _ADD),
     (insert_under_heading, _ADD),
     (write_note, _CHANGE),
