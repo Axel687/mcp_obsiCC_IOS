@@ -5,7 +5,7 @@ Two sources, tried in order:
 1. FxTwitter (``api.fxtwitter.com``), the open-source service behind the fixed X
    previews on Discord. It returns the full text, long posts included, plus author,
    date, counters, media links and the quoted post. X articles come back in full,
-   converted to Markdown (headings, lists, links, image placeholders). It is a volunteer-run third party:
+   converted to Markdown (headings, lists, links, images, code blocks). It is a volunteer-run third party:
    it can be down or cut off by X.
 2. X's official oEmbed endpoint (``publish.x.com/oembed``), used to embed posts on web
    pages. Always available but only gives the text, and long posts are cut after
@@ -120,12 +120,13 @@ def _media_urls(article: dict[str, Any]) -> dict[str, str]:
     return urls
 
 
-def _utf16_slice(text: str, offset: int, length: int) -> tuple[str, str, str]:
-    """Split text around a Draft.js range (offsets count UTF-16 code units)."""
-    raw = text.encode("utf-16-le")
-    a, b = 2 * offset, 2 * (offset + length)
-    dec = lambda x: x.decode("utf-16-le", errors="ignore")  # noqa: E731
-    return dec(raw[:a]), dec(raw[a:b]), dec(raw[b:])
+def _split(text: str, offset: int, length: int) -> tuple[str, str, str]:
+    """Split text around an entity range.
+
+    X counts article offsets in code points (Python string indices), not UTF-16 units:
+    with UTF-16, a link after an emoji came out one character too early.
+    """
+    return text[:offset], text[offset:offset + length], text[offset + length:]
 
 
 def _with_links(text: str, ranges: list[dict[str, Any]], entities: dict[str, dict[str, Any]]) -> str:
@@ -136,7 +137,7 @@ def _with_links(text: str, ranges: list[dict[str, Any]], entities: dict[str, dic
         if ent.get("type") == "LINK" and url:
             links.append((int(r.get("offset", 0)), int(r.get("length", 0)), url))
     for offset, length, url in sorted(links, reverse=True):  # right to left keeps offsets valid
-        before, label, after = _utf16_slice(text, offset, length)
+        before, label, after = _split(text, offset, length)
         text = f"{before}[{label}]({url}){after}"
     return text
 
@@ -151,6 +152,8 @@ def _media_line(block: dict[str, Any], entities: dict[str, dict[str, Any]], urls
             for item in data.get("mediaItems") or [{}]:
                 url = urls.get(str(item.get("mediaId", "")), "")
                 lines.append(f"![{caption}]({url})" if url else f"[image{': ' + caption if caption else ''}]")
+        elif ent.get("type") == "MARKDOWN" and data.get("markdown"):
+            lines.append(data["markdown"].strip("\n"))
         elif ent.get("type") in {"TWEET", "POST"} and data.get("tweetId"):
             lines.append(f"[post cité : https://x.com/i/status/{data['tweetId']}]")
         elif data.get("url"):
@@ -206,13 +209,21 @@ def _from_fx(tweet: dict[str, Any], depth: int = 0) -> dict[str, Any]:
         "text": tweet.get("text", ""),
         "truncated": False,
         "likes": tweet.get("likes"),
-        "reposts": tweet.get("retweets"),
+        "reposts": tweet.get("retweets", tweet.get("reposts")),  # v1 / v2 names
         "replies": tweet.get("replies"),
         "views": tweet.get("views"),
         "media": _media(tweet),
     }
-    if tweet.get("replying_to"):
-        post["replying_to"] = tweet["replying_to"]
+    for key in ("quotes", "bookmarks"):  # API v2 only
+        if tweet.get(key) is not None:
+            post[key] = tweet[key]
+    replying = tweet.get("replying_to")
+    if isinstance(replying, dict):  # API v2: {"screen_name", "status"}
+        post["replying_to"] = replying.get("screen_name", "")
+        if replying.get("status"):
+            post["replying_to_status"] = str(replying["status"])
+    elif replying:
+        post["replying_to"] = replying
         if tweet.get("replying_to_status"):
             post["replying_to_status"] = str(tweet["replying_to_status"])
     poll = tweet.get("poll")
@@ -227,7 +238,7 @@ def _from_fx(tweet: dict[str, Any], depth: int = 0) -> dict[str, Any]:
     note = tweet.get("community_note")
     if note:
         post["community_note"] = note.get("text", "") if isinstance(note, dict) else str(note)
-    if tweet.get("quote") and depth == 0:
+    if tweet.get("quote") and depth == 0 and tweet["quote"].get("type") != "tombstone":
         post["quote"] = _from_fx(tweet["quote"], depth + 1)
     return post
 
@@ -303,3 +314,103 @@ def fetch(url: str) -> dict[str, Any]:
     if post["truncated"]:
         out["note"] = "Only the beginning of this long post is available right now (FxTwitter is unreachable)."
     return out
+
+
+# -- conversations (FxTwitter API v2) -------------------------------------------------
+
+SORTS = {"likes", "recency"}
+MAX_PAGE = 100
+
+
+def _v2(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    try:
+        resp = _get(f"{FXTWITTER}/2/{path}", params)
+    except requests.RequestException as exc:
+        raise XPostError(f"could not reach FxTwitter ({exc.__class__.__name__})") from None
+    try:
+        data = resp.json()
+    except ValueError:
+        data = {}
+    if resp.status_code == 200:
+        return data
+    if resp.status_code in {401, 403, 404}:
+        raise XPostError(f"not found: deleted, protected or suspended ({data.get('message') or resp.status_code})")
+    raise XPostError(f"FxTwitter error {resp.status_code}: {data.get('message') or 'unknown'}")
+
+
+def _compact(tweet: dict[str, Any]) -> dict[str, Any]:
+    """A reply or a quoting post: the post fields without the bulky article."""
+    if tweet.get("type") == "tombstone":
+        return {"id": str(tweet.get("id", "")), "unavailable": tweet.get("message") or "unavailable"}
+    post = _from_fx(tweet, depth=1)
+    post.pop("article", None)
+    return post
+
+
+def _user(user: dict[str, Any]) -> dict[str, Any]:
+    out = {
+        "name": user.get("name", ""),
+        "username": user.get("screen_name", ""),
+        "followers": user.get("followers"),
+        "description": user.get("description", ""),
+    }
+    if (user.get("verification") or {}).get("verified"):
+        out["verified"] = True
+    return out
+
+
+def _cursor(data: dict[str, Any]) -> str | None:
+    return (data.get("cursor") or {}).get("bottom") or None
+
+
+def _count(n: int) -> int:
+    return max(1, min(int(n), MAX_PAGE))
+
+
+def conversation(url: str, sort: str = "likes", cursor: str | None = None) -> dict[str, Any]:
+    """A post, the posts above it in its thread, and one page of replies."""
+    post_id, _ = parse_url(url)
+    if sort not in SORTS:
+        raise XPostError(f"sort must be one of {sorted(SORTS)}")
+    params: dict[str, Any] = {"ranking_mode": sort}
+    if cursor:
+        params["cursor"] = cursor
+    data = _v2(f"conversation/{post_id}", params)
+    out: dict[str, Any] = {"id": post_id}
+    status = data.get("status")
+    if status:  # pages after the first only carry replies
+        out["post"] = _from_fx(status) if status.get("type") != "tombstone" else _compact(status)
+    thread = [_compact(t) for t in data.get("thread") or [] if str(t.get("id")) != post_id]
+    if thread:
+        out["thread"] = thread
+    out["replies"] = [_compact(t) for t in data.get("replies") or []]
+    out["next_cursor"] = _cursor(data)
+    return out
+
+
+def reposters(url: str, count: int = 40, cursor: str | None = None) -> dict[str, Any]:
+    """Accounts that reposted a post (newest first, as X lists them)."""
+    post_id, _ = parse_url(url)
+    params: dict[str, Any] = {"count": _count(count)}
+    if cursor:
+        params["cursor"] = cursor
+    data = _v2(f"status/{post_id}/reposts", params)
+    return {
+        "id": post_id,
+        "users": [_user(u) for u in data.get("results") or []],
+        "next_cursor": _cursor(data),
+    }
+
+
+def quotes(url: str, count: int = 20, cursor: str | None = None) -> dict[str, Any]:
+    """Posts that quote a post (latest first)."""
+    post_id, _ = parse_url(url)
+    params: dict[str, Any] = {"count": _count(count)}
+    if cursor:
+        params["cursor"] = cursor
+    data = _v2(f"status/{post_id}/quotes", params)
+    return {
+        "id": post_id,
+        "quotes": [_compact(t) for t in data.get("results") or []],
+        "next_cursor": _cursor(data),
+    }

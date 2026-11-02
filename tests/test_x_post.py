@@ -156,7 +156,7 @@ ARTICLE = {
             {"key": "a", "type": "unstyled", "text": "I RUN ALL OF OUR SEO OUT OF THIS SETUP.", "entityRanges": [], "data": {}},
             {"key": "b", "type": "header-two", "text": "Why 🧠 memory", "entityRanges": [], "data": {}},
             {"key": "c", "type": "unstyled", "text": "😀 Read the docs now.",
-             "entityRanges": [{"key": 3, "offset": 8, "length": 3}], "data": {}},
+             "entityRanges": [{"key": 3, "offset": 7, "length": 3}], "data": {}},
             {"key": "d", "type": "atomic", "text": " ", "entityRanges": [{"key": 8, "offset": 0, "length": 1}], "data": {}},
             {"key": "e", "type": "atomic", "text": " ", "entityRanges": [{"key": 12, "offset": 0, "length": 1}], "data": {}},
             {"key": "f", "type": "unordered-list-item", "text": "first point", "entityRanges": [], "data": {}},
@@ -199,3 +199,87 @@ def test_article_entity_map_as_dict() -> None:
         },
     })
     assert art["text"] == "see [here](https://a.b)"
+
+
+def test_article_code_block_and_emoji_link_offsets() -> None:
+    art = x_post._article({
+        "title": "t",
+        "content": {
+            "blocks": [
+                {"type": "unstyled", "text": "\U0001F381 you can click here", "entityRanges": [{"key": 0, "offset": 10, "length": 10}]},
+                {"type": "unstyled", "text": ".claude/rules/pages.md:", "entityRanges": []},
+                {"type": "atomic", "text": " ", "entityRanges": [{"key": 1, "offset": 0, "length": 1}]},
+            ],
+            "entityMap": [
+                {"key": "0", "value": {"type": "LINK", "data": {"url": "https://a.b"}}},
+                {"key": "1", "value": {"type": "MARKDOWN", "data": {"markdown": "```yaml\npaths: pages/**\n```\n"}}},
+            ],
+        },
+    })
+    assert art["text"] == "\U0001F381 you can [click here](https://a.b)\n\n.claude/rules/pages.md:\n\n```yaml\npaths: pages/**\n```"
+    assert art["images"] == 0
+
+
+def _v2_status(id_, text, user, likes=0, parent=None, **extra):
+    return {
+        "type": "status", "id": id_, "url": f"https://x.com/{user}/status/{id_}", "text": text,
+        "created_timestamp": 1793628000, "author": {"name": user.title(), "screen_name": user},
+        "likes": likes, "reposts": 1, "quotes": 2, "replies": 0, "views": 50, "bookmarks": 4,
+        "media": {}, "lang": "fr",
+        "replying_to": {"screen_name": "a", "status": parent} if parent else None, **extra,
+    }
+
+
+CONV = {
+    "code": 200,
+    "status": _v2_status("2", "the post", "a", likes=9, parent="1"),
+    "thread": [_v2_status("1", "thread start", "a"), _v2_status("2", "the post", "a")],
+    "replies": [
+        _v2_status("3", "great", "b", likes=5, parent="2"),
+        _v2_status("4", "agree", "c", parent="3"),
+        {"type": "tombstone", "id": "5", "message": "This post is unavailable"},
+    ],
+    "cursor": {"bottom": "CUR"},
+}
+
+
+def test_conversation(web) -> None:
+    calls = web(FakeResp(200, CONV))
+    out = server.read_x_conversation("https://x.com/a/status/2?s=20", sort="recency")
+    assert out["ok"] and out["id"] == "2"
+    assert out["post"]["likes"] == 9 and out["post"]["quotes"] == 2 and out["post"]["bookmarks"] == 4
+    assert out["post"]["replying_to"] == "a" and out["post"]["replying_to_status"] == "1"
+    assert [t["id"] for t in out["thread"]] == ["1"]
+    assert [r.get("username") for r in out["replies"]] == ["b", "c", None]
+    assert out["replies"][1]["replying_to_status"] == "3"
+    assert out["replies"][2]["unavailable"] == "This post is unavailable"
+    assert out["next_cursor"] == "CUR"
+    assert calls == [(f"{x_post.FXTWITTER}/2/conversation/2", {"ranking_mode": "recency"})]
+
+
+def test_conversation_next_page_has_only_replies(web) -> None:
+    calls = web(FakeResp(200, {"code": 200, "status": None, "thread": None, "replies": [], "cursor": None}))
+    out = server.read_x_conversation("2", cursor="CUR")
+    assert out["ok"] and "post" not in out and out["replies"] == [] and out["next_cursor"] is None
+    assert calls[0][1] == {"ranking_mode": "likes", "cursor": "CUR"}
+
+
+def test_conversation_errors(web) -> None:
+    assert "sort must be" in server.read_x_conversation("2", sort="views")["error"]
+    web(FakeResp(404, {"code": 404}))
+    assert "not found" in server.read_x_conversation("2")["error"]
+    web(requests.ConnectionError("down"))
+    assert "could not reach FxTwitter" in server.read_x_conversation("2")["error"]
+
+
+def test_reposts_and_quotes(web) -> None:
+    user = {"name": "Bob", "screen_name": "bob", "followers": 12, "description": "hi", "verification": {"verified": True}}
+    calls = web(FakeResp(200, {"code": 200, "results": [user], "cursor": {"top": None, "bottom": "N"}}))
+    out = server.read_x_reposts("https://x.com/a/status/2", count=500)
+    assert out["users"] == [{"name": "Bob", "username": "bob", "followers": 12, "description": "hi", "verified": True}]
+    assert out["next_cursor"] == "N"
+    assert calls[-1] == (f"{x_post.FXTWITTER}/2/status/2/reposts", {"count": 100})
+    web(FakeResp(200, {"code": 200, "results": [_v2_status("9", "lol", "d")], "cursor": {"bottom": None}}))
+    out = server.read_x_quotes("2", count=5, cursor="X")
+    assert out["quotes"][0]["text"] == "lol" and out["next_cursor"] is None
+    assert calls[-1] == (f"{x_post.FXTWITTER}/2/status/2/quotes", {"count": 5, "cursor": "X"})
