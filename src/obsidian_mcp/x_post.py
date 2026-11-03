@@ -416,17 +416,3 @@ def reposters(url: str, count: int = 40, cursor: str | None = None) -> dict[str,
         out["not_shown"] = len(users) - params["count"]
     out["next_cursor"] = _cursor(data)
     return out
-
-
-def quotes(url: str, count: int = 20, cursor: str | None = None) -> dict[str, Any]:
-    """Posts that quote a post (latest first)."""
-    post_id, _ = parse_url(url)
-    params: dict[str, Any] = {"count": _count(count)}
-    if cursor:
-        params["cursor"] = cursor
-    data = _v2(f"status/{post_id}/quotes", params)
-    return {
-        "id": post_id,
-        "quotes": [_compact(t) for t in data.get("results") or []],
-        "next_cursor": _cursor(data),
-    }

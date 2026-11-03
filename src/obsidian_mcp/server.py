@@ -389,17 +389,6 @@ def read_x_reposts(url: str, count: int = 40, cursor: str | None = None) -> dict
         return _err(exc)
 
 
-def read_x_quotes(url: str, count: int = 20, cursor: str | None = None) -> dict[str, Any]:
-    """Posts that quote a public post on X, latest first, with their text and stats.
-
-    `count` is 1-100 per page; pass `next_cursor` back as `cursor` for more.
-    Uses FxTwitter, no X account. Nothing is written to the vault.
-    """
-    try:
-        return {"ok": True, **x_post.quotes(url, count, cursor)}
-    except x_post.XPostError as exc:
-        return _err(exc)
-
 # -- assembly --------------------------------------------------------------------------
 
 _READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
@@ -423,7 +412,6 @@ _TOOLS: list[tuple[Callable[..., Any], ToolAnnotations]] = [
     (read_x_post, _WEB),
     (read_x_conversation, _WEB),
     (read_x_reposts, _WEB),
-    (read_x_quotes, _WEB),
     (append_note, _ADD),
     (insert_under_heading, _ADD),
     (write_note, _CHANGE),
