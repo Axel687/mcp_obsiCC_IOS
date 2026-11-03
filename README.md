@@ -27,6 +27,11 @@ the Claude iPhone/iPad/Android apps through a self-hosted server.
   `read_x_reposts` lists who reposted it (FxTwitter API v2). Who liked a post is
   private on X and cannot be read. Posts quoting a post are not available: FxTwitter
   finds them through X search, which fails on its side.
+- **X search (experimental)** — `search_x` searches posts by keywords with X's operators
+  (`from:`, `lang:`, `since:`, `min_faves:`…), newest or top first. It uses
+  [twscrape](https://github.com/vladkens/twscrape) with the cookies of a **dedicated**
+  X account: this is unofficial scraping, against X's terms, and X may lock or suspend
+  that account. Never use your main account.
 - **Graphs** — run matplotlib code and save the figure into the vault (local mode only by
   default).
 
@@ -161,6 +166,8 @@ locally, e.g. from a cloud sandbox.
 | `OBSIDIAN_YOUTUBE_PROXY` | *(unset)* | Proxy URL for `youtube_transcript` (YouTube often blocks cloud IPs) |
 | `OBSIDIAN_YOUTUBE_API_KEY` | *(unset)* | YouTube Data API v3 key for `youtube_search_videos` |
 | `OBSIDIAN_X_INBOX_ACCOUNT` | *(unset)* | Public X username (no @) read by `read_x_inbox` |
+| `OBSIDIAN_X_SEARCH_COOKIES` | *(unset)* | Browser cookies of the dedicated account for `search_x`: `auth_token=...; ct0=...` |
+| `OBSIDIAN_X_SEARCH_ACCOUNT` | `OBSIDIAN_X_INBOX_ACCOUNT` | Username (no @) of that account |
 | `OBSIDIAN_VAULT_REMOTE` | *(unset)* | Git URL of the vault repo — enables sync |
 | `OBSIDIAN_GIT_TOKEN` | *(unset)* | Token for HTTPS git auth (e.g. GitHub fine-grained PAT) |
 | `OBSIDIAN_PULL_INTERVAL` | `30` | Min seconds between automatic pulls; `0` = every call, negative = never |

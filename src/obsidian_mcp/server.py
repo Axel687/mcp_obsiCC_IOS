@@ -18,7 +18,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
-from . import graphs, links, notes, pdf, sync, x_post, youtube, youtube_search
+from . import graphs, links, notes, pdf, sync, x_post, x_search, youtube, youtube_search
 from .config import ConfigError, Settings, load_settings
 from .notes import embed_attachment
 from .vault import VaultError
@@ -412,6 +412,25 @@ def read_x_inbox(
         return _err(exc)
 
 
+async def search_x(query: str, count: int = 20, sort: str = "latest") -> dict[str, Any]:
+    """Search posts on X by keywords, like the search box of x.com.
+
+    `query` accepts X's search operators: `from:user`, `to:user`, `"exact phrase"`,
+    `-word`, `lang:fr`, `since:2026-10-01`, `until:`, `min_faves:100`, `min_retweets:`,
+    `filter:links`, `-filter:replies`, `OR`. `sort`: "latest" (default, newest first)
+    or "top" (X's popular ranking). `count` 1-50 (default 20). Each post has url, kind
+    (post, reply, quote), date, author, full text, stats, links, media and quoted post;
+    call read_x_conversation on a url for its replies.
+    Uses a dedicated X account through twscrape (unofficial, against X's terms): search
+    deliberately, a few queries at a time. If it reports a refused session or a rate
+    limit, tell the user. Nothing is written to the vault.
+    """
+    try:
+        return {"ok": True, **await x_search.search(query, count, sort)}
+    except x_search.XSearchError as exc:
+        return _err(exc)
+
+
 # -- assembly --------------------------------------------------------------------------
 
 _READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
@@ -436,6 +455,7 @@ _TOOLS: list[tuple[Callable[..., Any], ToolAnnotations]] = [
     (read_x_conversation, _WEB),
     (read_x_reposts, _WEB),
     (read_x_inbox, _WEB),
+    (search_x, _WEB),
     (append_note, _ADD),
     (insert_under_heading, _ADD),
     (write_note, _CHANGE),
