@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from typing import Any, Iterator
 
+from mcp.server.apps import Apps
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
@@ -434,6 +435,7 @@ async def search_x(query: str, count: int = 20, sort: str = "latest") -> dict[st
 # -- ecosystem -----------------------------------------------------------------------
 
 _registered: list[str] = []
+STATUS_APP_URI = "ui://obsidian-mcp/ecosystem-status.html"
 
 
 async def ecosystem_status(check: bool = True) -> dict[str, Any]:
@@ -449,6 +451,7 @@ async def ecosystem_status(check: bool = True) -> dict[str, Any]:
     name, time and success of each call are counted, never its content.
     `check=false` skips the network tests and only returns usage.
     The Revolut server is separate: call revolut_accounts for its state.
+    In Claude, the result also shows as an interactive card with a "Revérifier" button.
     """
     return {"ok": True, **await status.report(_registered, check)}
 
@@ -504,13 +507,28 @@ def build_server(settings: Settings) -> MCPServer:
             validate_token_resource=False,
         )
 
-    server = MCPServer("obsidian-mcp", instructions=INSTRUCTIONS, **kwargs)
     tools = list(_TOOLS)
     if settings.enable_graphs:
         tools.append((generate_graph, _ADD))
     _registered[:] = [fn.__name__ for fn, _ in tools]
+
+    # ecosystem_status carries an MCP App: hosts that support it render the result
+    # as a card; the others get the same JSON as before.
+    apps = Apps()
+    apps.add_html_resource(
+        STATUS_APP_URI,
+        status.app_html(),
+        name="ecosystem-status",
+        title="État de l'écosystème",
+        prefers_border=True,
+    )
     for fn, annotations in tools:
-        server.add_tool(status.tracked(fn), annotations=annotations)
+        if fn is ecosystem_status:
+            apps.tool(resource_uri=STATUS_APP_URI, annotations=annotations)(status.tracked(fn))
+    server = MCPServer("obsidian-mcp", instructions=INSTRUCTIONS, extensions=[apps], **kwargs)
+    for fn, annotations in tools:
+        if fn is not ecosystem_status:
+            server.add_tool(status.tracked(fn), annotations=annotations)
 
     if provider is not None:
         from .auth import install_login_routes
