@@ -319,6 +319,11 @@ async def run_checks() -> dict[str, dict[str, Any]]:
     return results
 
 
+def app_html() -> str:
+    """The MCP App (interactive card) shown with ecosystem_status results."""
+    return (Path(__file__).parent / "status_app.html").read_text(encoding="utf-8")
+
+
 _RANK = {"error": 3, "warning": 2, "not_configured": 1, "ok": 0, "unchecked": 0}
 
 

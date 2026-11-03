@@ -290,6 +290,15 @@ def test_full_flow_and_sync(setup) -> None:
     assert by_tool["append_note"]["depends_on"] == ["vault_git"]
     assert "Jung" not in json.dumps(eco)
 
+    # It carries an MCP App (interactive card) served as a ui:// resource.
+    tool = next(t for t in res["result"]["tools"] if t["name"] == "ecosystem_status")
+    uri = tool["_meta"]["ui"]["resourceUri"]
+    status_code, read = client.rpc("resources/read", {"uri": uri})
+    assert status_code == 200, read
+    content = read["result"]["contents"][0]
+    assert content["mimeType"] == "text/html;profile=mcp-app"
+    assert "ui/initialize" in content["text"] and "Revérifier" in content["text"]
+
     # Static token for Claude Code.
     assert Mcp(base, STATIC_TOKEN).call("list_tags")["tags"][0]["tag"] in {"index", "psy"}
 

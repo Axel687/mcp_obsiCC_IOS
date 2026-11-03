@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>État de l'écosystème</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: var(--color-background-primary, light-dark(#ffffff, #1f1f1e));
+    --bg2: var(--color-background-secondary, light-dark(#f5f4ef, #2a2a28));
+    --fg: var(--color-text-primary, light-dark(#1f1f1e, #f5f4ef));
+    --fg2: var(--color-text-secondary, light-dark(#5e5d59, #b8b5a9));
+    --line: var(--color-border-tertiary, light-dark(#e6e4dc, #3a3a37));
+    --ok: var(--color-text-success, light-dark(#2f7d32, #6cc070));
+    --warn: var(--color-text-warning, light-dark(#a15c00, #e9a13b));
+    --err: var(--color-text-danger, light-dark(#b3261e, #f2766b));
+    --off: var(--color-text-tertiary, light-dark(#8f8d86, #8f8d86));
+    --radius: var(--border-radius-md, 8px);
+    --font: var(--font-sans, system-ui, -apple-system, sans-serif);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font);
+    font-size: 14px; line-height: 1.4; }
+  main { padding: 12px 14px 14px; }
+  header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0; flex: 1; }
+  .when { color: var(--fg2); font-size: 12px; }
+  button { font: inherit; color: var(--fg); background: var(--bg2); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 0 14px; min-height: 44px; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: default; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; display: inline-block; }
+  .ok { background: var(--ok); } .warning { background: var(--warn); }
+  .error { background: var(--err); } .not_configured, .unchecked { background: var(--off); }
+  .bricks { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px;
+    margin-bottom: 12px; align-items: start; }
+  details.brick { background: var(--bg2); border-radius: var(--radius); }
+  details.brick summary { list-style: none; display: flex; align-items: center; gap: 8px;
+    padding: 10px; min-height: 44px; cursor: pointer; }
+  details.brick summary::-webkit-details-marker { display: none; }
+  details.brick p { margin: 0; padding: 0 10px 10px; color: var(--fg2); font-size: 12px;
+    word-break: break-word; }
+  h2 { font-size: 12px; font-weight: 600; color: var(--fg2); text-transform: uppercase;
+    letter-spacing: .04em; margin: 12px 0 4px; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 6px 0; border-top: 1px solid var(--line); vertical-align: middle; }
+  td.name { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12.5px; }
+  td.num { text-align: right; color: var(--fg2); font-size: 12px; white-space: nowrap; padding-left: 8px; }
+  td.dotc { width: 18px; }
+  .bad { color: var(--err); }
+  .note { color: var(--fg2); font-size: 12px; margin-top: 12px; }
+  .empty { color: var(--fg2); padding: 20px 0; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>État de l'écosystème</h1>
+    <span class="when" id="when"></span>
+    <button id="recheck" type="button" disabled>Revérifier</button>
+  </header>
+  <div id="content"><p class="empty">Vérification en cours…</p></div>
+</main>
+<script>
+(() => {
+  const BRICKS = {
+    vault_git: "Dépôt du vault",
+    youtube_proxy: "Proxy YouTube",
+    youtube_api_key: "Clé API YouTube",
+    fxtwitter: "FxTwitter",
+    x_inbox_account: "Compte X inbox",
+    x_search_account: "Compte X recherche",
+  };
+  const STATES = { ok: "OK", warning: "Attention", error: "En panne",
+    not_configured: "Non configuré", unchecked: "Non vérifié" };
+  const GROUPS = [
+    ["Vault", t => !t.tool.startsWith("youtube") && !/_x_|_x$|^search_x/.test(t.tool) && t.tool !== "ecosystem_status"],
+    ["YouTube", t => t.tool.startsWith("youtube")],
+    ["X", t => /_x_|_x$|^search_x/.test(t.tool)],
+  ];
+
+  let nextId = 1;
+  const pending = new Map();
+  function request(method, params) {
+    const id = nextId++;
+    window.parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+    return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+  }
+  function notify(method, params) {
+    window.parent.postMessage({ jsonrpc: "2.0", method, params }, "*");
+  }
+
+  function esc(s) {
+    return String(s ?? "").replace(/[&<>"']/g, c =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  }
+  function ago(iso) {
+    if (!iso) return "jamais";
+    const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (s < 60) return "à l'instant";
+    if (s < 3600) return `il y a ${Math.round(s / 60)} min`;
+    if (s < 86400) return `il y a ${Math.round(s / 3600)} h`;
+    return `il y a ${Math.round(s / 86400)} j`;
+  }
+
+  function payload(result) {
+    if (!result) return null;
+    let data = result.structuredContent;
+    if (!data && Array.isArray(result.content)) {
+      const text = result.content.find(c => c.type === "text");
+      try { data = text && JSON.parse(text.text); } catch { data = null; }
+    }
+    if (data && data.result && !data.tools) data = data.result;
+    return data && Array.isArray(data.tools) ? data : null;
+  }
+
+  function render(data) {
+    const el = document.getElementById("content");
+    if (!data) { el.innerHTML = '<p class="empty">Résultat illisible.</p>'; return; }
+    document.getElementById("when").textContent = data.checked_at ? ago(data.checked_at) : "";
+    let html = "";
+    const checks = data.checks || {};
+    if (Object.keys(checks).length) {
+      html += '<div class="bricks">';
+      for (const [key, c] of Object.entries(checks)) {
+        html += `<details class="brick"><summary><span class="dot ${esc(c.state)}"></span>` +
+          `<span>${esc(BRICKS[key] || key)}</span></summary>` +
+          `<p>${esc(STATES[c.state] || c.state)} · ${esc(c.detail)}` +
+          `${c.ms != null ? ` · ${esc(c.ms)} ms` : ""}</p></details>`;
+      }
+      html += "</div>";
+    }
+    for (const [title, keep] of GROUPS) {
+      const rows = data.tools.filter(keep);
+      if (!rows.length) continue;
+      html += `<h2>${esc(title)}</h2><table>`;
+      for (const t of rows) {
+        const errs = t.errors ? ` · <span class="bad">${esc(t.errors)} err.</span>` : "";
+        html += `<tr><td class="dotc"><span class="dot ${esc(t.state)}" title="${esc(STATES[t.state] || t.state)}"></span></td>` +
+          `<td class="name">${esc(t.tool)}</td>` +
+          `<td class="num">${esc(t.calls)} appel${t.calls > 1 ? "s" : ""}${errs} · ${esc(ago(t.last_call))}` +
+          `${t.last_call_ok === false ? ' <span class="bad">(échec)</span>' : ""}</td></tr>`;
+      }
+      html += "</table>";
+    }
+    if (data.usage_counted_since) {
+      html += `<p class="note">Appels comptés depuis le ${esc(new Date(data.usage_counted_since).toLocaleDateString("fr-FR"))}. ` +
+        "Revolut est à part : demande à Claude son état.</p>";
+    }
+    el.innerHTML = html;
+  }
+
+  function applyContext(ctx) {
+    if (!ctx) return;
+    const vars = ctx.styles && ctx.styles.variables;
+    if (vars) for (const [k, v] of Object.entries(vars)) if (v) document.documentElement.style.setProperty(k, v);
+    if (ctx.theme) document.documentElement.style.colorScheme = ctx.theme;
+    const inset = ctx.safeAreaInsets;
+    if (inset) document.querySelector("main").style.padding =
+      `${12 + inset.top}px ${14 + inset.right}px ${14 + inset.bottom}px ${14 + inset.left}px`;
+  }
+
+  window.addEventListener("message", event => {
+    const msg = event.data;
+    if (!msg || msg.jsonrpc !== "2.0") return;
+    if (msg.id != null && pending.has(msg.id) && !msg.method) {
+      const p = pending.get(msg.id);
+      pending.delete(msg.id);
+      msg.error ? p.reject(new Error(msg.error.message || "error")) : p.resolve(msg.result);
+      return;
+    }
+    if (msg.method === "ui/notifications/tool-result") render(payload(msg.params));
+    else if (msg.method === "ui/notifications/host-context-changed") applyContext(msg.params);
+    else if (msg.id != null && msg.method === "ui/resource-teardown")
+      window.parent.postMessage({ jsonrpc: "2.0", id: msg.id, result: {} }, "*");
+  });
+
+  const button = document.getElementById("recheck");
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    button.textContent = "…";
+    try {
+      render(payload(await request("tools/call", { name: "ecosystem_status", arguments: { check: true } })));
+    } catch (e) {
+      document.getElementById("when").textContent = "échec de la vérification";
+    } finally {
+      button.disabled = false;
+      button.textContent = "Revérifier";
+    }
+  });
+
+  new ResizeObserver(() => {
+    const r = document.documentElement.getBoundingClientRect();
+    notify("ui/notifications/size-changed", { width: Math.ceil(r.width), height: Math.ceil(r.height) });
+  }).observe(document.documentElement);
+
+  request("ui/initialize", {
+    protocolVersion: "2026-01-26",
+    appInfo: { name: "ecosystem-status", version: "1.0.0" },
+    appCapabilities: { availableDisplayModes: ["inline"] },
+  }).then(result => {
+    applyContext(result && result.hostContext);
+    notify("ui/notifications/initialized", {});
+    button.disabled = false;
+  }).catch(() => { button.disabled = false; });
+})();
+</script>
+</body>
+</html>
