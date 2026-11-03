@@ -357,6 +357,47 @@ def read_x_post(url: str) -> dict[str, Any]:
         return _err(exc)
 
 
+
+def read_x_conversation(url: str, sort: str = "likes", cursor: str | None = None) -> dict[str, Any]:
+    """Read the replies to a public post on X, with the post itself and its stats.
+
+    Returns `post` (as read_x_post, plus quotes and bookmarks counts), `thread` (the
+    posts above it when it is itself a reply or part of a thread) and one page of
+    `replies` from other accounts, each with author, text, date, likes, reposts, replies,
+    views and `replying_to_status` (the post it answers, to rebuild the tree).
+    `sort`: "likes" (default) or "recency". Pass `next_cursor` back as `cursor` for the
+    next page of replies. Who liked a post is private on X and cannot be read.
+    Uses FxTwitter, no X account. Nothing is written to the vault.
+    """
+    try:
+        return {"ok": True, **x_post.conversation(url, sort, cursor)}
+    except x_post.XPostError as exc:
+        return _err(exc)
+
+
+def read_x_reposts(url: str, count: int = 40, cursor: str | None = None) -> dict[str, Any]:
+    """Accounts that reposted a public post on X (name, handle, followers, bio).
+
+    `count` is 1-100 per page; pass `next_cursor` back as `cursor` for more. Who liked a
+    post is private on X and cannot be read. Uses FxTwitter, no X account.
+    """
+    try:
+        return {"ok": True, **x_post.reposters(url, count, cursor)}
+    except x_post.XPostError as exc:
+        return _err(exc)
+
+
+def read_x_quotes(url: str, count: int = 20, cursor: str | None = None) -> dict[str, Any]:
+    """Posts that quote a public post on X, latest first, with their text and stats.
+
+    `count` is 1-100 per page; pass `next_cursor` back as `cursor` for more.
+    Uses FxTwitter, no X account. Nothing is written to the vault.
+    """
+    try:
+        return {"ok": True, **x_post.quotes(url, count, cursor)}
+    except x_post.XPostError as exc:
+        return _err(exc)
+
 # -- assembly --------------------------------------------------------------------------
 
 _READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
@@ -378,6 +419,9 @@ _TOOLS: list[tuple[Callable[..., Any], ToolAnnotations]] = [
     (youtube_transcript, _WEB),
     (youtube_search_videos, _WEB),
     (read_x_post, _WEB),
+    (read_x_conversation, _WEB),
+    (read_x_reposts, _WEB),
+    (read_x_quotes, _WEB),
     (append_note, _ADD),
     (insert_under_heading, _ADD),
     (write_note, _CHANGE),
