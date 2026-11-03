@@ -6,15 +6,20 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -q -e .
       - run: |
-          for p in "2/profile/jack/statuses?with_replies=1&count=10" "2/profile/id:12/statuses?count=10" "2/profile/NASA/statuses?count=5" "2/profile/NASA/statuses?with_replies=1&count=5" "2/profile/id:11348282/statuses?count=5" "2/profile/jack/statuses?with_replies=1&count=5&since=1793600000"; do
-            echo "== $p"; curl -s -A "obsidian-mcp (+https://github.com/Axel687/mcp_obsiCC_IOS)" -o /tmp/r.json -w "[HTTP %{http_code}]\n" "https://api.fxtwitter.com/$p"
-            python3 -c "
-          import json
-          try: d=json.load(open('/tmp/r.json'))
-          except Exception as e: print('no json', e); raise SystemExit
-          print('keys', list(d), 'cursor', d.get('cursor'))
-          for s in d.get('results',[]):
-              print(' ', s.get('type'), 'by', (s.get('reposted_by') or {}).get('screen_name'), '@'+(s.get('author') or {}).get('screen_name',''), 'reply_to', s.get('replying_to'), repr((s.get('text') or '')[:50]))
-          "
-          done
+          python - <<'PY'
+          from obsidian_mcp import server
+          for kw in [dict(account="jack", count=5), dict(account="NASA", count=5), dict(account="id:12", count=3),
+                     dict(account="jack", since="7d", count=5), dict(account="jack", only_reposts=True, count=3)]:
+              out = server.read_x_inbox(**kw)
+              print("==", kw, "ok", out.get("ok"), out.get("error"), "count", out.get("count"), "next", (out.get("next_cursor") or "")[:12])
+              for p in out.get("posts", []):
+                  print("  ", p["kind"], "@" + p["username"], p["date"], repr(p["text"][:40]))
+              if out.get("next_cursor"):
+                  o2 = server.read_x_inbox(account=kw["account"], cursor=out["next_cursor"], count=2)
+                  print("   page2 ok", o2.get("ok"), o2.get("error"), [p["id"] for p in o2.get("posts", [])])
+          PY
