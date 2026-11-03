@@ -258,10 +258,24 @@ def test_conversation(web) -> None:
 
 
 def test_conversation_next_page_has_only_replies(web) -> None:
-    calls = web(FakeResp(200, {"code": 200, "status": None, "thread": None, "replies": [], "cursor": None}))
+    calls = web(FakeResp(200, CONV))  # FxTwitter repeats the post and thread on later pages
     out = server.read_x_conversation("2", cursor="CUR")
-    assert out["ok"] and "post" not in out and out["replies"] == [] and out["next_cursor"] is None
+    assert out["ok"] and "post" not in out and "thread" not in out
+    assert len(out["replies"]) == 3 and out["next_cursor"] == "CUR"
     assert calls[0][1] == {"ranking_mode": "likes", "cursor": "CUR"}
+
+
+def test_conversation_empty_page_ends_pagination(web) -> None:
+    web(FakeResp(200, {"code": 200, "status": None, "thread": None, "replies": [], "cursor": {"bottom": "NEW"}}))
+    out = server.read_x_conversation("2", cursor="CUR")
+    assert out["replies"] == [] and out["next_cursor"] is None
+
+
+def test_conversation_article_reduced_to_title(web) -> None:
+    status = dict(CONV["status"], article=ARTICLE)
+    web(FakeResp(200, dict(CONV, status=status)))
+    out = server.read_x_conversation("2")
+    assert out["post"]["article"] == {"title": ARTICLE["title"], "note": "full text with read_x_post"}
 
 
 def test_conversation_errors(web) -> None:
