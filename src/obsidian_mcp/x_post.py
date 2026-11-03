@@ -424,7 +424,8 @@ def reposters(url: str, count: int = 40, cursor: str | None = None) -> dict[str,
 # -- inbox: the posts of a dedicated account (FxTwitter API v2) --------------------------
 
 INBOX_ENV = "OBSIDIAN_X_INBOX_ACCOUNT"
-_HANDLE_RE = re.compile(r"^@?([A-Za-z0-9_]{1,15})$")
+_HANDLE_RE = re.compile(r"^@?([A-Za-z0-9_]{1,15})$|^(id:\d{1,25})$", re.I)
+_REPLIES_CURSOR = "r:"  # marks a cursor from the with_replies timeline
 _SINCE_RE = re.compile(r"^(\d+)\s*([hd])$")
 
 
@@ -435,7 +436,7 @@ def _handle(account: str | None) -> str:
     m = _HANDLE_RE.match(value.rstrip("/").rsplit("/", 1)[-1])
     if not m:
         raise XPostError(f"not an X username: {value!r}")
-    return m.group(1)
+    return m.group(1) or m.group(2).lower()
 
 
 def _since(value: str) -> int:
@@ -454,6 +455,21 @@ def _since(value: str) -> int:
     return int(dt.timestamp())
 
 
+def _timeline(handle: str, params: dict[str, Any], replies: bool) -> dict[str, Any]:
+    if replies:
+        params = {**params, "with_replies": "1"}
+    return _v2(f"profile/{handle}/statuses", params)
+
+
+def _mine(status: dict[str, Any], handle: str) -> bool:
+    """With replies, X also sends other people's replies in the threads: keep the account's own."""
+    if handle.startswith("id:"):
+        ids = {str((status.get("author") or {}).get("id", "")), str((status.get("reposted_by") or {}).get("id", ""))}
+        return handle[3:] in ids
+    names = {(status.get("author") or {}).get("screen_name", ""), (status.get("reposted_by") or {}).get("screen_name", "")}
+    return handle.lower() in {n.lower() for n in names if n}
+
+
 def inbox(
     account: str | None = None,
     since: str | None = None,
@@ -461,17 +477,39 @@ def inbox(
     cursor: str | None = None,
     only_reposts: bool = False,
 ) -> dict[str, Any]:
-    """Latest posts of the inbox account, newest first: what the user reposted for review."""
+    """Latest posts of the inbox account, newest first: what the user reposted for review.
+
+    FxTwitter's plain profile timeline answers 404 for some accounts whose profile it
+    cannot look up (seen on 2026-11-03 for @jack, while @NASA works); its with_replies
+    timeline still works for them, so it is the fallback. Its cursors are marked "r:".
+    """
     handle = _handle(account)
     params: dict[str, Any] = {"count": _count(count)}
+    replies = bool(cursor and cursor.startswith(_REPLIES_CURSOR))
     if cursor:
-        params["cursor"] = cursor
+        params["cursor"] = cursor.removeprefix(_REPLIES_CURSOR)
     elif since:
         params["since"] = _since(since)
-    data = _v2(f"profile/{handle}/statuses", params)
+    try:
+        data = _timeline(handle, params, replies)
+    except XPostError as exc:
+        if replies or "not found" not in str(exc):
+            raise
+        replies = True
+        try:
+            data = _timeline(handle, params, replies)
+        except XPostError as exc2:
+            if "not found" in str(exc2):
+                raise XPostError(
+                    f"no posts found for @{handle}: the account does not exist, is protected "
+                    "(it must be public), or has not posted or reposted anything yet"
+                ) from None
+            raise
     items: list[dict[str, Any]] = []
     for status in data.get("results") or []:
         if status.get("type") not in (None, "status"):
+            continue
+        if replies and not _mine(status, handle):
             continue
         reposted = bool(status.get("reposted_by"))
         if only_reposts and not reposted:
@@ -494,5 +532,6 @@ def inbox(
     if len(items) > params["count"]:
         out["not_shown"] = len(items) - params["count"]
     # Same guard as conversation(): an empty page ends the pagination.
-    out["next_cursor"] = _cursor(data) if data.get("results") else None
+    nxt = _cursor(data) if data.get("results") else None
+    out["next_cursor"] = (_REPLIES_CURSOR + nxt if replies else nxt) if nxt else None
     return out
