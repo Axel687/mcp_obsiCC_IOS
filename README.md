@@ -32,6 +32,12 @@ the Claude iPhone/iPad/Android apps through a self-hosted server.
   [twscrape](https://github.com/vladkens/twscrape) with the cookies of a **dedicated**
   X account: this is unofficial scraping, against X's terms, and X may lock or suspend
   that account. Never use your main account.
+- **Ecosystem status** — `ecosystem_status` tests every building block the tools rely
+  on (vault Git repository, YouTube proxy, YouTube API key, FxTwitter, X inbox and
+  search accounts) and gives, for each tool, its state, call count and date of last
+  call. Only the tool name, time and success of each call are counted (in
+  `usage.json` in the state directory), never arguments or results; secrets are never
+  shown (a proxy appears as `host:port`).
 - **Graphs** — run matplotlib code and save the figure into the vault (local mode only by
   default).
 

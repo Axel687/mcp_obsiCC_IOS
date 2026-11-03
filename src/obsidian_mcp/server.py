@@ -18,7 +18,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
-from . import graphs, links, notes, pdf, sync, x_post, x_search, youtube, youtube_search
+from . import graphs, links, notes, pdf, status, sync, x_post, x_search, youtube, youtube_search
 from .config import ConfigError, Settings, load_settings
 from .notes import embed_attachment
 from .vault import VaultError
@@ -431,6 +431,28 @@ async def search_x(query: str, count: int = 20, sort: str = "latest") -> dict[st
         return _err(exc)
 
 
+# -- ecosystem -----------------------------------------------------------------------
+
+_registered: list[str] = []
+
+
+async def ecosystem_status(check: bool = True) -> dict[str, Any]:
+    """State of this MCP server and of everything its tools depend on, plus when each
+    tool was last used.
+
+    `checks` tests each building block with the cheapest request possible: the vault's
+    Git repository (reachable, unpushed commits), the YouTube proxy, the YouTube API key
+    (1 quota unit), FxTwitter, the X inbox account, and the X search account (its state
+    as last seen, without contacting X). Each has `state`: ok, warning, error or
+    not_configured, and a `detail`. `tools` gives, for each tool, its state (worst of
+    its dependencies), call count, errors and the date of the last call. Only the tool
+    name, time and success of each call are counted, never its content.
+    `check=false` skips the network tests and only returns usage.
+    The Revolut server is separate: call revolut_accounts for its state.
+    """
+    return {"ok": True, **await status.report(_registered, check)}
+
+
 # -- assembly --------------------------------------------------------------------------
 
 _READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
@@ -461,6 +483,7 @@ _TOOLS: list[tuple[Callable[..., Any], ToolAnnotations]] = [
     (write_note, _CHANGE),
     (delete_note, _CHANGE),
     (sync_vault, _ADD),
+    (ecosystem_status, _WEB),
 ]
 
 
@@ -482,10 +505,12 @@ def build_server(settings: Settings) -> MCPServer:
         )
 
     server = MCPServer("obsidian-mcp", instructions=INSTRUCTIONS, **kwargs)
-    for fn, annotations in _TOOLS:
-        server.add_tool(fn, annotations=annotations)
+    tools = list(_TOOLS)
     if settings.enable_graphs:
-        server.add_tool(generate_graph, annotations=_ADD)
+        tools.append((generate_graph, _ADD))
+    _registered[:] = [fn.__name__ for fn, _ in tools]
+    for fn, annotations in tools:
+        server.add_tool(status.tracked(fn), annotations=annotations)
 
     if provider is not None:
         from .auth import install_login_routes
