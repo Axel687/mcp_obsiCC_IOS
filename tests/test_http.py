@@ -281,6 +281,15 @@ def test_full_flow_and_sync(setup) -> None:
     git("push", cwd=phone)
     assert "Ombre" in client.call("read_note", path="Jung")["content"]
 
+    # ecosystem_status: the vault repo is reachable, calls above were counted, and
+    # nothing of their content was kept.
+    eco = client.call("ecosystem_status")
+    assert eco["checks"]["vault_git"]["state"] == "ok", eco["checks"]["vault_git"]
+    by_tool = {t["tool"]: t for t in eco["tools"]}
+    assert by_tool["read_note"]["calls"] == 1 and by_tool["read_note"]["last_call_ok"] is True
+    assert by_tool["append_note"]["depends_on"] == ["vault_git"]
+    assert "Jung" not in json.dumps(eco)
+
     # Static token for Claude Code.
     assert Mcp(base, STATIC_TOKEN).call("list_tags")["tags"][0]["tag"] in {"index", "psy"}
 
