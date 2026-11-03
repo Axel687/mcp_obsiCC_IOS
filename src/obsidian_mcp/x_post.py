@@ -378,13 +378,26 @@ def conversation(url: str, sort: str = "likes", cursor: str | None = None) -> di
     data = _v2(f"conversation/{post_id}", params)
     out: dict[str, Any] = {"id": post_id}
     status = data.get("status")
-    if status:  # pages after the first only carry replies
-        out["post"] = _from_fx(status) if status.get("type") != "tombstone" else _compact(status)
-    thread = [_compact(t) for t in data.get("thread") or [] if str(t.get("id")) != post_id]
-    if thread:
-        out["thread"] = thread
+    # FxTwitter repeats the post on every page: only page 1 gets it, and an article is
+    # reduced to its title (read_x_post gives the full text).
+    if status and not cursor:
+        if status.get("type") == "tombstone":
+            out["post"] = _compact(status)
+        else:
+            out["post"] = _from_fx(status)
+            article = out["post"].get("article")
+            if article:
+                out["post"]["article"] = {
+                    "title": article.get("title", ""),
+                    "note": "full text with read_x_post",
+                }
+        thread = [_compact(t) for t in data.get("thread") or [] if str(t.get("id")) != post_id]
+        if thread:
+            out["thread"] = thread
     out["replies"] = [_compact(t) for t in data.get("replies") or []]
-    out["next_cursor"] = _cursor(data)
+    # X hands out a fresh cursor even when there is nothing left: an empty page ends it,
+    # so a caller following next_cursor cannot loop forever.
+    out["next_cursor"] = _cursor(data) if out["replies"] else None
     return out
 
 
@@ -395,22 +408,11 @@ def reposters(url: str, count: int = 40, cursor: str | None = None) -> dict[str,
     if cursor:
         params["cursor"] = cursor
     data = _v2(f"status/{post_id}/reposts", params)
-    return {
-        "id": post_id,
-        "users": [_user(u) for u in data.get("results") or []],
-        "next_cursor": _cursor(data),
-    }
-
-
-def quotes(url: str, count: int = 20, cursor: str | None = None) -> dict[str, Any]:
-    """Posts that quote a post (latest first)."""
-    post_id, _ = parse_url(url)
-    params: dict[str, Any] = {"count": _count(count)}
-    if cursor:
-        params["cursor"] = cursor
-    data = _v2(f"status/{post_id}/quotes", params)
-    return {
-        "id": post_id,
-        "quotes": [_compact(t) for t in data.get("results") or []],
-        "next_cursor": _cursor(data),
-    }
+    users = [_user(u) for u in data.get("results") or []]
+    out: dict[str, Any] = {"id": post_id, "users": users[: params["count"]]}
+    # X ignores the requested page size (5 asked, 33 sent in the real test): cut here.
+    # The cursor still points after X's whole page, so say how many were left out.
+    if len(users) > params["count"]:
+        out["not_shown"] = len(users) - params["count"]
+    out["next_cursor"] = _cursor(data)
+    return out

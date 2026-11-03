@@ -20,10 +20,11 @@ the Claude iPhone/iPad/Android apps through a self-hosted server.
 - **X posts** — `read_x_post` reads one public post on X from its link (full text of
   long posts and X articles, author, date, stats, quoted post, media links) via FxTwitter, with X's
   oEmbed as a fallback. No X account or API key.
-- **X replies, reposts, quotes** — `read_x_conversation` returns a post, the thread above
+- **X replies and reposts** — `read_x_conversation` returns a post, the thread above
   it and its replies (sorted by likes or date, paginated, each with its stats);
-  `read_x_reposts` lists who reposted it and `read_x_quotes` the posts quoting it
-  (FxTwitter API v2). Who liked a post is private on X and cannot be read.
+  `read_x_reposts` lists who reposted it (FxTwitter API v2). Who liked a post is
+  private on X and cannot be read. Posts quoting a post are not available: FxTwitter
+  finds them through X search, which fails on its side.
 - **Graphs** — run matplotlib code and save the figure into the vault (local mode only by
   default).
 

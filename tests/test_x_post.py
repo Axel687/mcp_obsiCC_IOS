@@ -258,10 +258,24 @@ def test_conversation(web) -> None:
 
 
 def test_conversation_next_page_has_only_replies(web) -> None:
-    calls = web(FakeResp(200, {"code": 200, "status": None, "thread": None, "replies": [], "cursor": None}))
+    calls = web(FakeResp(200, CONV))  # FxTwitter repeats the post and thread on later pages
     out = server.read_x_conversation("2", cursor="CUR")
-    assert out["ok"] and "post" not in out and out["replies"] == [] and out["next_cursor"] is None
+    assert out["ok"] and "post" not in out and "thread" not in out
+    assert len(out["replies"]) == 3 and out["next_cursor"] == "CUR"
     assert calls[0][1] == {"ranking_mode": "likes", "cursor": "CUR"}
+
+
+def test_conversation_empty_page_ends_pagination(web) -> None:
+    web(FakeResp(200, {"code": 200, "status": None, "thread": None, "replies": [], "cursor": {"bottom": "NEW"}}))
+    out = server.read_x_conversation("2", cursor="CUR")
+    assert out["replies"] == [] and out["next_cursor"] is None
+
+
+def test_conversation_article_reduced_to_title(web) -> None:
+    status = dict(CONV["status"], article=ARTICLE)
+    web(FakeResp(200, dict(CONV, status=status)))
+    out = server.read_x_conversation("2")
+    assert out["post"]["article"] == {"title": ARTICLE["title"], "note": "full text with read_x_post"}
 
 
 def test_conversation_errors(web) -> None:
@@ -272,14 +286,15 @@ def test_conversation_errors(web) -> None:
     assert "could not reach FxTwitter" in server.read_x_conversation("2")["error"]
 
 
-def test_reposts_and_quotes(web) -> None:
+def test_reposts(web) -> None:
     user = {"name": "Bob", "screen_name": "bob", "followers": 12, "description": "hi", "verification": {"verified": True}}
     calls = web(FakeResp(200, {"code": 200, "results": [user], "cursor": {"top": None, "bottom": "N"}}))
     out = server.read_x_reposts("https://x.com/a/status/2", count=500)
     assert out["users"] == [{"name": "Bob", "username": "bob", "followers": 12, "description": "hi", "verified": True}]
     assert out["next_cursor"] == "N"
     assert calls[-1] == (f"{x_post.FXTWITTER}/2/status/2/reposts", {"count": 100})
-    web(FakeResp(200, {"code": 200, "results": [_v2_status("9", "lol", "d")], "cursor": {"bottom": None}}))
-    out = server.read_x_quotes("2", count=5, cursor="X")
-    assert out["quotes"][0]["text"] == "lol" and out["next_cursor"] is None
-    assert calls[-1] == (f"{x_post.FXTWITTER}/2/status/2/quotes", {"count": 5, "cursor": "X"})
+    assert "not_shown" not in out
+    web(FakeResp(200, {"code": 200, "results": [dict(user, screen_name=f"u{i}") for i in range(33)], "cursor": {}}))
+    out = server.read_x_reposts("2", count=5)
+    assert [u["username"] for u in out["users"]] == ["u0", "u1", "u2", "u3", "u4"]
+    assert out["not_shown"] == 28 and out["next_cursor"] is None

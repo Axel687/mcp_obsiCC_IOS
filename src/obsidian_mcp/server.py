@@ -378,7 +378,9 @@ def read_x_conversation(url: str, sort: str = "likes", cursor: str | None = None
 def read_x_reposts(url: str, count: int = 40, cursor: str | None = None) -> dict[str, Any]:
     """Accounts that reposted a public post on X (name, handle, followers, bio).
 
-    `count` is 1-100 per page; pass `next_cursor` back as `cursor` for more. Who liked a
+    `count` is 1-100 per page; pass `next_cursor` back as `cursor` for more. X sends its
+    own page size, so extra accounts are cut and counted in `not_shown`: they are not on
+    the next page, ask a bigger `count` to see them. Who liked a
     post is private on X and cannot be read. Uses FxTwitter, no X account.
     """
     try:
@@ -386,17 +388,6 @@ def read_x_reposts(url: str, count: int = 40, cursor: str | None = None) -> dict
     except x_post.XPostError as exc:
         return _err(exc)
 
-
-def read_x_quotes(url: str, count: int = 20, cursor: str | None = None) -> dict[str, Any]:
-    """Posts that quote a public post on X, latest first, with their text and stats.
-
-    `count` is 1-100 per page; pass `next_cursor` back as `cursor` for more.
-    Uses FxTwitter, no X account. Nothing is written to the vault.
-    """
-    try:
-        return {"ok": True, **x_post.quotes(url, count, cursor)}
-    except x_post.XPostError as exc:
-        return _err(exc)
 
 # -- assembly --------------------------------------------------------------------------
 
@@ -421,7 +412,6 @@ _TOOLS: list[tuple[Callable[..., Any], ToolAnnotations]] = [
     (read_x_post, _WEB),
     (read_x_conversation, _WEB),
     (read_x_reposts, _WEB),
-    (read_x_quotes, _WEB),
     (append_note, _ADD),
     (insert_under_heading, _ADD),
     (write_note, _CHANGE),
