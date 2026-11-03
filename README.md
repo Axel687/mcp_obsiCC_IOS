@@ -20,6 +20,8 @@ the Claude iPhone/iPad/Android apps through a self-hosted server.
 - **X posts** — `read_x_post` reads one public post on X from its link (full text of
   long posts and X articles, author, date, stats, quoted post, media links) via FxTwitter, with X's
   oEmbed as a fallback. No X account or API key.
+- **X inbox** — `read_x_inbox` reads the latest posts of a dedicated public X account:
+  repost there what you want Claude to analyse (filters: since a date or `24h`, reposts only).
 - **X replies and reposts** — `read_x_conversation` returns a post, the thread above
   it and its replies (sorted by likes or date, paginated, each with its stats);
   `read_x_reposts` lists who reposted it (FxTwitter API v2). Who liked a post is
@@ -158,6 +160,7 @@ locally, e.g. from a cloud sandbox.
 | `OBSIDIAN_ENABLE_GRAPHS` | on in stdio, off in http | Expose `generate_graph` |
 | `OBSIDIAN_YOUTUBE_PROXY` | *(unset)* | Proxy URL for `youtube_transcript` (YouTube often blocks cloud IPs) |
 | `OBSIDIAN_YOUTUBE_API_KEY` | *(unset)* | YouTube Data API v3 key for `youtube_search_videos` |
+| `OBSIDIAN_X_INBOX_ACCOUNT` | *(unset)* | Public X username (no @) read by `read_x_inbox` |
 | `OBSIDIAN_VAULT_REMOTE` | *(unset)* | Git URL of the vault repo — enables sync |
 | `OBSIDIAN_GIT_TOKEN` | *(unset)* | Token for HTTPS git auth (e.g. GitHub fine-grained PAT) |
 | `OBSIDIAN_PULL_INTERVAL` | `30` | Min seconds between automatic pulls; `0` = every call, negative = never |
