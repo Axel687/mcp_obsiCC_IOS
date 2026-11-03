@@ -91,4 +91,44 @@ def test_errors(fx, monkeypatch) -> None:
     assert server.read_x_inbox(account="axel_inbox", since="yesterday")["ok"] is False
     fx(FakeResp(404, {"message": "User not found"}))
     out = server.read_x_inbox(account="axel_inbox")
-    assert out["ok"] is False and "not found" in out["error"]
+    assert out["ok"] is False and "no posts found" in out["error"]
+
+
+def test_fallback_to_with_replies_timeline(monkeypatch) -> None:
+    calls: list[dict] = []
+    page = {
+        "code": 200,
+        "results": [
+            status("1", "reposted", reposted_by={"screen_name": "Axel_Inbox"}),
+            status("2", "someone else's reply in a thread", author="stranger"),
+            status("3", "my own post", author="axel_inbox"),
+        ],
+        "cursor": {"bottom": "b2"},
+    }
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls.append(params)
+        if params.get("with_replies"):
+            return FakeResp(200, page)
+        return FakeResp(404, {"code": 404, "results": [], "cursor": {"top": None, "bottom": None}})
+
+    monkeypatch.setattr(x_post.requests, "get", fake_get)
+    out = server.read_x_inbox(account="axel_inbox")
+    assert out["ok"] and [p["id"] for p in out["posts"]] == ["1", "3"]
+    assert out["next_cursor"] == "r:b2"
+    assert calls == [{"count": 20}, {"count": 20, "with_replies": "1"}]
+    # The next page goes straight to the with_replies timeline, with the bare cursor.
+    server.read_x_inbox(account="axel_inbox", cursor="r:b2")
+    assert calls[-1] == {"count": 20, "cursor": "b2", "with_replies": "1"}
+
+
+def test_both_timelines_empty(fx) -> None:
+    fx(FakeResp(404, {"code": 404, "results": [], "cursor": {"top": None, "bottom": None}}))
+    out = server.read_x_inbox(account="axel_inbox")
+    assert out["ok"] is False and "public" in out["error"]
+
+
+def test_numeric_account_id(fx) -> None:
+    calls = fx(FakeResp(200, PAGE))
+    out = server.read_x_inbox(account="ID:12")
+    assert out["ok"] and calls[0][0].endswith("/2/profile/id:12/statuses")
