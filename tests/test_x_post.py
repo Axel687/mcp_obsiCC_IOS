@@ -293,6 +293,11 @@ def test_reposts_and_quotes(web) -> None:
     assert out["users"] == [{"name": "Bob", "username": "bob", "followers": 12, "description": "hi", "verified": True}]
     assert out["next_cursor"] == "N"
     assert calls[-1] == (f"{x_post.FXTWITTER}/2/status/2/reposts", {"count": 100})
+    assert "not_shown" not in out
+    web(FakeResp(200, {"code": 200, "results": [dict(user, screen_name=f"u{i}") for i in range(33)], "cursor": {}}))
+    out = server.read_x_reposts("2", count=5)
+    assert [u["username"] for u in out["users"]] == ["u0", "u1", "u2", "u3", "u4"]
+    assert out["not_shown"] == 28 and out["next_cursor"] is None
     web(FakeResp(200, {"code": 200, "results": [_v2_status("9", "lol", "d")], "cursor": {"bottom": None}}))
     out = server.read_x_quotes("2", count=5, cursor="X")
     assert out["quotes"][0]["text"] == "lol" and out["next_cursor"] is None

@@ -378,7 +378,9 @@ def read_x_conversation(url: str, sort: str = "likes", cursor: str | None = None
 def read_x_reposts(url: str, count: int = 40, cursor: str | None = None) -> dict[str, Any]:
     """Accounts that reposted a public post on X (name, handle, followers, bio).
 
-    `count` is 1-100 per page; pass `next_cursor` back as `cursor` for more. Who liked a
+    `count` is 1-100 per page; pass `next_cursor` back as `cursor` for more. X sends its
+    own page size, so extra accounts are cut and counted in `not_shown`: they are not on
+    the next page, ask a bigger `count` to see them. Who liked a
     post is private on X and cannot be read. Uses FxTwitter, no X account.
     """
     try:

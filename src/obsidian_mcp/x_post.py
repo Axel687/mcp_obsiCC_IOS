@@ -408,11 +408,14 @@ def reposters(url: str, count: int = 40, cursor: str | None = None) -> dict[str,
     if cursor:
         params["cursor"] = cursor
     data = _v2(f"status/{post_id}/reposts", params)
-    return {
-        "id": post_id,
-        "users": [_user(u) for u in data.get("results") or []],
-        "next_cursor": _cursor(data),
-    }
+    users = [_user(u) for u in data.get("results") or []]
+    out: dict[str, Any] = {"id": post_id, "users": users[: params["count"]]}
+    # X ignores the requested page size (5 asked, 33 sent in the real test): cut here.
+    # The cursor still points after X's whole page, so say how many were left out.
+    if len(users) > params["count"]:
+        out["not_shown"] = len(users) - params["count"]
+    out["next_cursor"] = _cursor(data)
+    return out
 
 
 def quotes(url: str, count: int = 20, cursor: str | None = None) -> dict[str, Any]:
