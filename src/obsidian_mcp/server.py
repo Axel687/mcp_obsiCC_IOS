@@ -389,6 +389,29 @@ def read_x_reposts(url: str, count: int = 40, cursor: str | None = None) -> dict
         return _err(exc)
 
 
+def read_x_inbox(
+    since: str | None = None,
+    count: int = 20,
+    cursor: str | None = None,
+    only_reposts: bool = False,
+    account: str | None = None,
+) -> dict[str, Any]:
+    """The user's X "inbox": latest posts of their dedicated X account, newest first.
+
+    The user reposts (or quotes, or posts links) on a second X account everything they
+    want analysed; this tool reads that account. `since` keeps only newer posts: a date
+    ("2026-11-02"), a date-time, or a duration ("24h", "7d"). `count` 1-100 (default 20);
+    follow `next_cursor` for older posts. Each post has `kind` (repost, quote, reply,
+    post), full text, author, date, stats, media and quoted post; for an article only the
+    title (call read_x_post on its url for the full text). `account` overrides the
+    configured account. No X login is used; the account must be public.
+    """
+    try:
+        return {"ok": True, **x_post.inbox(account, since, count, cursor, only_reposts)}
+    except x_post.XPostError as exc:
+        return _err(exc)
+
+
 # -- assembly --------------------------------------------------------------------------
 
 _READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
@@ -412,6 +435,7 @@ _TOOLS: list[tuple[Callable[..., Any], ToolAnnotations]] = [
     (read_x_post, _WEB),
     (read_x_conversation, _WEB),
     (read_x_reposts, _WEB),
+    (read_x_inbox, _WEB),
     (append_note, _ADD),
     (insert_under_heading, _ADD),
     (write_note, _CHANGE),

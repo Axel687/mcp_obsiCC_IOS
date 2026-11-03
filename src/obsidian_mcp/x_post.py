@@ -18,6 +18,7 @@ Protected and deleted posts cannot be read.
 from __future__ import annotations
 
 import html
+import os
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -333,6 +334,8 @@ def _v2(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         data = {}
     if resp.status_code == 200:
         return data
+    if resp.status_code == 204:  # e.g. nothing newer than `since`
+        return {}
     if resp.status_code in {401, 403, 404}:
         raise XPostError(f"not found: deleted, protected or suspended ({data.get('message') or resp.status_code})")
     raise XPostError(f"FxTwitter error {resp.status_code}: {data.get('message') or 'unknown'}")
@@ -415,4 +418,81 @@ def reposters(url: str, count: int = 40, cursor: str | None = None) -> dict[str,
     if len(users) > params["count"]:
         out["not_shown"] = len(users) - params["count"]
     out["next_cursor"] = _cursor(data)
+    return out
+
+
+# -- inbox: the posts of a dedicated account (FxTwitter API v2) --------------------------
+
+INBOX_ENV = "OBSIDIAN_X_INBOX_ACCOUNT"
+_HANDLE_RE = re.compile(r"^@?([A-Za-z0-9_]{1,15})$")
+_SINCE_RE = re.compile(r"^(\d+)\s*([hd])$")
+
+
+def _handle(account: str | None) -> str:
+    value = (account or os.environ.get(INBOX_ENV, "")).strip()
+    if not value:
+        raise XPostError(f"no inbox account: pass `account` or set {INBOX_ENV} (X username, without @)")
+    m = _HANDLE_RE.match(value.rstrip("/").rsplit("/", 1)[-1])
+    if not m:
+        raise XPostError(f"not an X username: {value!r}")
+    return m.group(1)
+
+
+def _since(value: str) -> int:
+    """'2026-11-02', '2026-11-02T08:00', '24h' or '7d' -> Unix seconds (UTC)."""
+    v = value.strip()
+    m = _SINCE_RE.match(v)
+    if m:
+        hours = int(m.group(1)) * (24 if m.group(2) == "d" else 1)
+        return int(datetime.now(tz=timezone.utc).timestamp()) - hours * 3600
+    try:
+        dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    except ValueError:
+        raise XPostError("since must be a date (2026-11-02), a date-time or a duration like 24h / 7d") from None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
+
+
+def inbox(
+    account: str | None = None,
+    since: str | None = None,
+    count: int = 20,
+    cursor: str | None = None,
+    only_reposts: bool = False,
+) -> dict[str, Any]:
+    """Latest posts of the inbox account, newest first: what the user reposted for review."""
+    handle = _handle(account)
+    params: dict[str, Any] = {"count": _count(count)}
+    if cursor:
+        params["cursor"] = cursor
+    elif since:
+        params["since"] = _since(since)
+    data = _v2(f"profile/{handle}/statuses", params)
+    items: list[dict[str, Any]] = []
+    for status in data.get("results") or []:
+        if status.get("type") not in (None, "status"):
+            continue
+        reposted = bool(status.get("reposted_by"))
+        if only_reposts and not reposted:
+            continue
+        post = _from_fx(status)
+        article = post.get("article")
+        if article:  # keep the inbox light; read_x_post has the full article
+            post["article"] = {"title": article.get("title", ""), "note": "full text with read_x_post"}
+        if reposted:
+            kind = "repost"
+        elif post.get("quote"):
+            kind = "quote"
+        elif post.get("replying_to"):
+            kind = "reply"
+        else:
+            kind = "post"
+        items.append({"kind": kind, **post})
+    posts = items[: params["count"]]
+    out: dict[str, Any] = {"account": handle, "count": len(posts), "posts": posts}
+    if len(items) > params["count"]:
+        out["not_shown"] = len(items) - params["count"]
+    # Same guard as conversation(): an empty page ends the pagination.
+    out["next_cursor"] = _cursor(data) if data.get("results") else None
     return out
