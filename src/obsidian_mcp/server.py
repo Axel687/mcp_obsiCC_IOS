@@ -422,8 +422,8 @@ async def search_x(query: str, count: int = 20, sort: str = "latest") -> dict[st
     (post, reply, quote), date, author, full text, stats, links, media and quoted post;
     call read_x_conversation on a url for its replies.
     Uses a dedicated X account through twscrape (unofficial, against X's terms): search
-    deliberately, a few queries at a time. If it reports a refused session or a rate
-    limit, tell the user. Nothing is written to the vault.
+    deliberately, one query at a time (never in parallel: the account serves one search
+    at a time). If it reports a refused session or a rate limit, tell the user. Nothing is written to the vault.
     """
     try:
         return {"ok": True, **await x_search.search(query, count, sort)}

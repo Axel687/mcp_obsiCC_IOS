@@ -23,6 +23,7 @@ ACCOUNT_ENV = "OBSIDIAN_X_SEARCH_ACCOUNT"
 FALLBACK_ACCOUNT_ENV = "OBSIDIAN_X_INBOX_ACCOUNT"
 SORTS = {"latest": "Latest", "top": "Top"}
 MAX_COUNT = 50
+WAIT_SECONDS = 45.0
 
 
 class XSearchError(Exception):
@@ -51,7 +52,11 @@ async def _pool(cookies: str, account: str, db: Path) -> Any:
     from twscrape.utils import parse_cookies
 
     set_log_level("WARNING")
-    pool = AccountsPool(str(db), raise_when_no_account=True, wait_timeout=0)
+    # twscrape locks the account while a search runs (up to 15 min if a call dies), so a
+    # second call made at the same time waits for the first instead of failing at once.
+    pool = AccountsPool(
+        str(db), raise_when_no_account=True, wait_timeout=WAIT_SECONDS, wait_interval=1.0
+    )
     try:
         wanted = parse_cookies(cookies)
     except Exception:
@@ -150,8 +155,9 @@ async def search(query: str, count: int = 20, sort: str = "latest") -> dict[str,
             ) from None
         nat = await pool.next_available_at("SearchTimeline")
         raise XSearchError(
-            f"X search is paused for @{account} (rate limit or connection error); "
-            f"try again after {nat or 'a few minutes'} (UTC)."
+            f"X search is busy or paused for @{account} (another search still running, "
+            f"rate limit or connection error); retry in a minute, at the latest after "
+            f"{nat or 'a few minutes'} (UTC)."
         ) from None
     except XSearchError:
         raise
