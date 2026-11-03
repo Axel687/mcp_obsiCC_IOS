@@ -1,0 +1,161 @@
+"""Search posts on X by keywords, with twscrape and a dedicated X account.
+
+X search needs a logged-in session. This module uses the browser cookies of one
+account set aside for it (never the user's main account): ``auth_token`` and ``ct0``
+in ``OBSIDIAN_X_SEARCH_COOKIES``, the account's username in
+``OBSIDIAN_X_SEARCH_ACCOUNT``. twscrape keeps its state (rate-limit locks, errors) in
+a small SQLite file next to the OAuth state.
+
+This is scraping X's private web API: it is against X's terms of service, and X may
+lock or suspend the account. Nothing here tries to hide the automation (no proxy, no
+fingerprint tricks): the account is used as is, so that its fate shows whether X
+tolerates this use. The cookies are never returned, logged or written to the vault.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any
+
+COOKIES_ENV = "OBSIDIAN_X_SEARCH_COOKIES"
+ACCOUNT_ENV = "OBSIDIAN_X_SEARCH_ACCOUNT"
+FALLBACK_ACCOUNT_ENV = "OBSIDIAN_X_INBOX_ACCOUNT"
+SORTS = {"latest": "Latest", "top": "Top"}
+MAX_COUNT = 50
+
+
+class XSearchError(Exception):
+    pass
+
+
+def _settings() -> tuple[str, str, Path]:
+    cookies = os.environ.get(COOKIES_ENV, "").strip()
+    account = (
+        os.environ.get(ACCOUNT_ENV, "").strip() or os.environ.get(FALLBACK_ACCOUNT_ENV, "").strip()
+    ).lstrip("@")
+    if not cookies or not account:
+        raise XSearchError(
+            f"X search is not configured: set {COOKIES_ENV} to the account's browser cookies "
+            f'("auth_token=...; ct0=...") and {ACCOUNT_ENV} to its username.'
+        )
+    state = Path(
+        os.environ.get("OBSIDIAN_MCP_STATE_DIR", "").strip() or "~/.local/state/obsidian-mcp"
+    ).expanduser()
+    state.mkdir(parents=True, exist_ok=True)
+    return cookies, account, state / "twscrape.db"
+
+
+async def _pool(cookies: str, account: str, db: Path) -> Any:
+    from twscrape import AccountsPool, set_log_level
+    from twscrape.utils import parse_cookies
+
+    set_log_level("WARNING")
+    pool = AccountsPool(str(db), raise_when_no_account=True, wait_timeout=0)
+    try:
+        wanted = parse_cookies(cookies)
+    except Exception:
+        raise XSearchError(f"{COOKIES_ENV} could not be parsed") from None
+    if not wanted.get("auth_token") or not wanted.get("ct0"):
+        raise XSearchError(f"{COOKIES_ENV} must contain auth_token and ct0")
+
+    acc = await pool.get_account(account)
+    stored = acc.cookies if acc else {}
+    if acc is None or any(stored.get(k) != wanted[k] for k in ("auth_token", "ct0")):
+        # New account or new cookies (the user refreshed them): start clean.
+        await pool.add_account_cookies(account, cookies)
+        await pool.reset_locks()
+    elif not acc.active:
+        raise XSearchError(
+            f"X refused the session of @{account}: {acc.error_msg or 'unknown reason'}. "
+            "The account may be locked or suspended, or its cookies expired: check it in a "
+            f"browser, then put fresh cookies in {COOKIES_ENV} and restart."
+        )
+    return pool
+
+
+def _user(u: Any) -> dict[str, Any]:
+    return {
+        "username": u.username,
+        "name": u.displayname,
+        "followers": u.followersCount,
+        "verified": bool(u.blue or u.verified),
+    }
+
+
+def _post(t: Any, nested: bool = True) -> dict[str, Any]:
+    kind = "post"
+    if t.inReplyToTweetId:
+        kind = "reply"
+    elif t.quotedTweet is not None:
+        kind = "quote"
+    out: dict[str, Any] = {
+        "url": t.url,
+        "id": t.id_str,
+        "kind": kind,
+        "date": t.date.isoformat() if t.date else None,
+        "author": _user(t.user),
+        "text": t.rawContent,
+        "lang": t.lang,
+        "likes": t.likeCount,
+        "reposts": t.retweetCount,
+        "replies": t.replyCount,
+        "quotes": t.quoteCount,
+        "views": t.viewCount,
+    }
+    if t.inReplyToScreenName:
+        out["replying_to"] = t.inReplyToScreenName
+    links = [link.url for link in (t.links or []) if link.url]
+    if links:
+        out["links"] = links
+    media = t.media
+    if media is not None:
+        urls = [p.url for p in media.photos] + [v.thumbnailUrl for v in media.videos]
+        urls += [a.thumbnailUrl for a in media.animated]
+        if urls:
+            out["media"] = urls
+    if nested and t.quotedTweet is not None:
+        out["quoted"] = _post(t.quotedTweet, nested=False)
+    return out
+
+
+async def search(query: str, count: int = 20, sort: str = "latest") -> dict[str, Any]:
+    query = (query or "").strip()
+    if not query:
+        raise XSearchError("query is empty")
+    product = SORTS.get((sort or "latest").lower())
+    if product is None:
+        raise XSearchError(f"sort must be one of {sorted(SORTS)}")
+    count = max(1, min(int(count), MAX_COUNT))
+
+    cookies, account, db = _settings()
+    pool = await _pool(cookies, account, db)
+
+    from twscrape import API
+    from twscrape.accounts_pool import NoAccountError
+
+    api = API(pool, raise_when_no_account=True)
+    posts: list[dict[str, Any]] = []
+    try:
+        async for tweet in api.search(query, limit=count, kv={"product": product}):
+            posts.append(_post(tweet))
+            if len(posts) >= count:
+                break
+    except NoAccountError:
+        acc = await pool.get_account(account)
+        if acc is not None and not acc.active:
+            raise XSearchError(
+                f"X refused the session of @{account}: {acc.error_msg or 'unknown reason'}. "
+                "The account may be locked or suspended, or its cookies expired."
+            ) from None
+        nat = await pool.next_available_at("SearchTimeline")
+        raise XSearchError(
+            f"X search is paused for @{account} (rate limit or connection error); "
+            f"try again after {nat or 'a few minutes'} (UTC)."
+        ) from None
+    except XSearchError:
+        raise
+    except Exception as exc:  # twscrape breaks when X changes its private API
+        raise XSearchError(f"X search failed ({exc.__class__.__name__}: {exc})") from None
+
+    return {"query": query, "sort": sort.lower(), "account": account, "count": len(posts), "posts": posts}
