@@ -420,8 +420,14 @@ async def search_x(query: str, count: int = 20, sort: str = "latest") -> dict[st
     `-word`, `lang:fr`, `since:2026-10-01`, `until:`, `min_faves:100`, `min_retweets:`,
     `filter:links`, `-filter:replies`, `OR`. `sort`: "latest" (default, newest first)
     or "top" (X's popular ranking). `count` 1-50 (default 20). Each post has url, kind
-    (post, reply, quote), date, author, full text, stats, links, media and quoted post;
-    call read_x_conversation on a url for its replies.
+    (post, reply, quote), date, author, full text, stats, links, media and quoted post.
+    Quota: X allows a fixed number of search requests per account every 15 minutes, and
+    one request returns at most 20 posts, so count <= 20 costs 1 request and count=50
+    costs 3. Prefer count <= 20 and precise queries. `quota` in the result gives X's
+    limit, the requests left (`remaining`, `searches_left` at this count) and when it
+    resets. Reading posts costs nothing: to dig into a post use read_x_post (full text,
+    articles), read_x_conversation (replies) or read_x_inbox, which go through
+    FxTwitter and never touch this quota or this account.
     Uses a dedicated X account through twscrape (unofficial, against X's terms): search
     deliberately, one query at a time (never in parallel: the account serves one search
     at a time). If it reports a refused session or a rate limit, tell the user. Nothing is written to the vault.
