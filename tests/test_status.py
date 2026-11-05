@@ -150,3 +150,25 @@ def test_x_search_account_from_twscrape_state(monkeypatch, state) -> None:
     out = asyncio.run(status.check_x_search_account())
     assert out["state"] == "error" and "suspended" in out["detail"]
     assert "abc" not in json.dumps(out)
+
+
+def test_x_search_account_shows_last_quota(monkeypatch, state) -> None:
+    monkeypatch.setenv(x_search.COOKIES_ENV, "auth_token=abc; ct0=def")
+    monkeypatch.setenv(x_search.ACCOUNT_ENV, "burner")
+
+    async def seed() -> None:
+        from twscrape import AccountsPool
+
+        await AccountsPool(str(state / "twscrape.db")).add_account_cookies("burner", "auth_token=abc; ct0=def")
+
+    asyncio.run(seed())
+    quota = {"account": "burner", "limit": 50, "remaining": 12, "resets_at": "2030-01-01T00:00:00+00:00"}
+    (state / x_search.QUOTA_FILE).write_text(json.dumps(quota))
+    out = asyncio.run(status.check_x_search_account())
+    assert out["state"] == "ok" and "12/50" in out["detail"] and out["quota"]["remaining"] == 12
+    (state / x_search.QUOTA_FILE).write_text(json.dumps({**quota, "remaining": 0}))
+    out = asyncio.run(status.check_x_search_account())
+    assert out["state"] == "warning" and "used up" in out["detail"]
+    # Another account's quota is ignored.
+    (state / x_search.QUOTA_FILE).write_text(json.dumps({**quota, "account": "other"}))
+    assert "quota" not in asyncio.run(status.check_x_search_account())

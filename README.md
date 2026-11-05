@@ -32,6 +32,11 @@ the Claude iPhone/iPad/Android apps through a self-hosted server.
   [twscrape](https://github.com/vladkens/twscrape) with the cookies of a **dedicated**
   X account: this is unofficial scraping, against X's terms, and X may lock or suspend
   that account. Never use your main account.
+  To measure it for real (X's quota, posts per request, how far back pages go, and
+  how well each search operator is honoured), run the bench on the server, one search
+  at a time, stopping 10 requests before the quota runs out:
+  `docker compose exec obsidian-mcp python -m obsidian_mcp.x_search_bench`
+  (`--help` for options; the JSON report lands in the state directory).
 - **Ecosystem status** — `ecosystem_status` tests every building block the tools rely
   on (vault Git repository, YouTube proxy, YouTube API key, FxTwitter, X inbox and
   search accounts) and gives, for each tool, its state, call count and date of last

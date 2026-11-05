@@ -293,6 +293,15 @@ async def _x_account_state(cookies: str, account: str, db: Path) -> dict[str, An
             f"@{account} paused by X's rate limit until {until.isoformat(timespec='minutes')}",
             **extra,
         )
+    quota = x_search.last_quota(db)
+    if quota and quota.get("account") == account:
+        extra["quota"] = {k: quota.get(k) for k in ("limit", "remaining", "resets_at")}
+        if quota.get("remaining") == 0:
+            return _result(
+                "warning", f"@{account}: X search quota used up until {quota['resets_at']}", **extra
+            )
+        left = f", {quota['remaining']}/{quota.get('limit')} search requests left"
+        return _result("ok", f"@{account} session accepted at the last search{left}", **extra)
     return _result("ok", f"@{account} session accepted at the last search", **extra)
 
 

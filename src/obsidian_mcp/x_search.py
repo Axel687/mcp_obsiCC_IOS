@@ -14,7 +14,11 @@ tolerates this use. The cookies are never returned, logged or written to the vau
 
 from __future__ import annotations
 
+import json
+import math
 import os
+from contextlib import aclosing
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +27,9 @@ ACCOUNT_ENV = "OBSIDIAN_X_SEARCH_ACCOUNT"
 FALLBACK_ACCOUNT_ENV = "OBSIDIAN_X_INBOX_ACCOUNT"
 SORTS = {"latest": "Latest", "top": "Top"}
 MAX_COUNT = 50
+PAGE_SIZE = 20  # posts per request: X's search pages hold at most 20
 WAIT_SECONDS = 45.0
+QUOTA_FILE = "x_search_quota.json"
 
 
 class XSearchError(Exception):
@@ -124,6 +130,75 @@ def _post(t: Any, nested: bool = True) -> dict[str, Any]:
     return out
 
 
+def _quota(headers: Any, account: str) -> dict[str, Any] | None:
+    """X's rate-limit headers for the search endpoint, as sent with each answer."""
+    try:
+        limit = int(headers.get("x-rate-limit-limit", -1))
+        remaining = int(headers.get("x-rate-limit-remaining", -1))
+        reset = int(headers.get("x-rate-limit-reset", -1))
+    except (TypeError, ValueError):
+        return None
+    if remaining < 0 or reset <= 0:
+        return None
+    return {
+        "account": account,
+        "limit": limit if limit >= 0 else None,
+        "remaining": remaining,
+        "resets_at": datetime.fromtimestamp(reset, tz=timezone.utc).isoformat(timespec="seconds"),
+        "seen_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+def _save_quota(db: Path, quota: dict[str, Any]) -> None:
+    try:
+        (db.parent / QUOTA_FILE).write_text(json.dumps(quota))
+    except OSError:
+        pass  # the quota is informative: never fail a search for it
+
+
+def last_quota(db: Path) -> dict[str, Any] | None:
+    """Quota as X reported it at the last search (None if unknown or already reset)."""
+    try:
+        quota = json.loads((db.parent / QUOTA_FILE).read_text())
+        reset = datetime.fromisoformat(quota["resets_at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if reset <= datetime.now(tz=timezone.utc):
+        quota = {**quota, "remaining": quota.get("limit"), "note": "window reset since the last search"}
+    return quota
+
+
+def page_tweets(obj: dict[str, Any], parse: Any) -> list[Any]:
+    """The posts of one search page, in X's order, without the extra ones.
+
+    twscrape's parse_tweets returns every post found in X's answer, including the
+    quoted posts nested in results, in no particular order, and ignores its limit.
+    Keep only the timeline entries ("tweet-<id>", not promoted ones), in their order.
+    """
+    order: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            entry = node.get("entryId")
+            if isinstance(entry, str) and entry.startswith("tweet-"):
+                order.append(entry[len("tweet-"):])
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(obj)
+    tweets = {t.id_str: t for t in parse(obj, -1)}
+    if not order:  # unknown layout: keep twscrape's answer rather than nothing
+        return list(tweets.values())
+    return [tweets[i] for i in dict.fromkeys(order) if i in tweets]
+
+
+def requests_needed(count: int) -> int:
+    return math.ceil(max(1, min(int(count), MAX_COUNT)) / PAGE_SIZE)
+
+
 async def search(query: str, count: int = 20, sort: str = "latest") -> dict[str, Any]:
     query = (query or "").strip()
     if not query:
@@ -138,14 +213,24 @@ async def search(query: str, count: int = 20, sort: str = "latest") -> dict[str,
 
     from twscrape import API
     from twscrape.accounts_pool import NoAccountError
+    from twscrape.models import parse_tweets
 
     api = API(pool, raise_when_no_account=True)
     posts: list[dict[str, Any]] = []
+    pages = 0
+    quota: dict[str, Any] | None = None
     try:
-        async for tweet in api.search(query, limit=count, kv={"product": product}):
-            posts.append(_post(tweet))
-            if len(posts) >= count:
-                break
+        # search_raw yields X's raw answers: the posts plus the rate-limit headers.
+        async with aclosing(api.search_raw(query, limit=count, kv={"product": product})) as gen:
+            async for rep in gen:
+                pages += 1
+                quota = _quota(rep.headers, account) or quota
+                for tweet in page_tweets(rep.json(), parse_tweets):
+                    posts.append(_post(tweet))
+                    if len(posts) >= count:
+                        break
+                if len(posts) >= count:
+                    break
     except NoAccountError:
         acc = await pool.get_account(account)
         if acc is not None and not acc.active:
@@ -154,14 +239,28 @@ async def search(query: str, count: int = 20, sort: str = "latest") -> dict[str,
                 "The account may be locked or suspended, or its cookies expired."
             ) from None
         nat = await pool.next_available_at("SearchTimeline")
+        known = last_quota(db)
+        hint = ""
+        if known and known.get("remaining") == 0:
+            hint = f" X's quota is used up until {known['resets_at']} (UTC)."
         raise XSearchError(
             f"X search is busy or paused for @{account} (another search still running, "
             f"rate limit or connection error); retry in a minute, at the latest after "
-            f"{nat or 'a few minutes'} (UTC)."
+            f"{nat or 'a few minutes'} (UTC).{hint}"
         ) from None
     except XSearchError:
         raise
     except Exception as exc:  # twscrape breaks when X changes its private API
         raise XSearchError(f"X search failed ({exc.__class__.__name__}: {exc})") from None
+    finally:
+        if quota:
+            _save_quota(db, quota)
 
-    return {"query": query, "sort": sort.lower(), "account": account, "count": len(posts), "posts": posts}
+    out: dict[str, Any] = {
+        "query": query, "sort": sort.lower(), "account": account,
+        "count": len(posts), "posts": posts, "requests": pages,
+    }
+    if quota:
+        out["quota"] = {k: quota[k] for k in ("limit", "remaining", "resets_at")}
+        out["quota"]["searches_left"] = quota["remaining"] // requests_needed(count)
+    return out
