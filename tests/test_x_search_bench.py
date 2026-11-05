@@ -64,7 +64,7 @@ class FakeRep:
     def __init__(self, tweets, remaining):
         self.tweets = tweets
         self.headers = {"x-rate-limit-limit": "50", "x-rate-limit-remaining": str(remaining),
-                        "x-rate-limit-reset": str(int((NOW + timedelta(minutes=15)).timestamp()))}
+                        "x-rate-limit-reset": str(int((datetime.now(timezone.utc) + timedelta(minutes=15)).timestamp()))}
 
     def json(self):
         return {"tweets": self.tweets}
@@ -169,3 +169,12 @@ def test_not_configured(monkeypatch, capsys) -> None:
 def test_phrase_ignores_punctuation() -> None:
     assert bench.check_phrase("open source")(post(text="Love open-source tools"))
     assert bench.check_phrase("open source")(post(text="#OpenSource"))  is False
+
+
+def test_since_until_window_allows_account_time_zone() -> None:
+    case = next(c for c in bench.default_cases(NOW) if c.name == "since:/until:")
+    check = next(iter(case.checks.values()))
+    assert check(post(date="2026-11-04T21:59:58+00:00"))  # seen live with until:2026-11-04
+    assert check(post(date="2026-11-01T22:30:00+00:00"))  # since day starting in UTC+2
+    assert not check(post(date="2026-11-05T15:00:00+00:00"))
+    assert not check(post(date="2026-10-31T12:00:00+00:00"))

@@ -168,6 +168,33 @@ def last_quota(db: Path) -> dict[str, Any] | None:
     return quota
 
 
+def page_tweets(obj: dict[str, Any], parse: Any) -> list[Any]:
+    """The posts of one search page, in X's order, without the extra ones.
+
+    twscrape's parse_tweets returns every post found in X's answer, including the
+    quoted posts nested in results, in no particular order, and ignores its limit.
+    Keep only the timeline entries ("tweet-<id>", not promoted ones), in their order.
+    """
+    order: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            entry = node.get("entryId")
+            if isinstance(entry, str) and entry.startswith("tweet-"):
+                order.append(entry[len("tweet-"):])
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(obj)
+    tweets = {t.id_str: t for t in parse(obj, -1)}
+    if not order:  # unknown layout: keep twscrape's answer rather than nothing
+        return list(tweets.values())
+    return [tweets[i] for i in dict.fromkeys(order) if i in tweets]
+
+
 def requests_needed(count: int) -> int:
     return math.ceil(max(1, min(int(count), MAX_COUNT)) / PAGE_SIZE)
 
@@ -198,8 +225,10 @@ async def search(query: str, count: int = 20, sort: str = "latest") -> dict[str,
             async for rep in gen:
                 pages += 1
                 quota = _quota(rep.headers, account) or quota
-                for tweet in parse_tweets(rep.json(), count - len(posts)):
+                for tweet in page_tweets(rep.json(), parse_tweets):
                     posts.append(_post(tweet))
+                    if len(posts) >= count:
+                        break
                 if len(posts) >= count:
                     break
     except NoAccountError:

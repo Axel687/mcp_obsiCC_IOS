@@ -201,3 +201,22 @@ def test_busy_error_mentions_used_up_quota(env, monkeypatch) -> None:
 def test_docstring_guides_quota_use() -> None:
     doc = server.search_x.__doc__
     assert "count <= 20 costs 1 request" in doc and "read_x_post" in doc and "never touch this quota" in doc
+
+
+def test_page_tweets_keeps_timeline_entries_in_order() -> None:
+    t = {i: SimpleNamespace(id_str=i) for i in ("1", "2", "3", "9")}
+    obj = {"data": {"instructions": [{"entries": [
+        {"entryId": "tweet-2"}, {"entryId": "promoted-tweet-3"}, {"entryId": "tweet-1"},
+        {"entryId": "cursor-bottom-x"}, {"entryId": "tweet-2"},
+    ]}]}}
+    # "9" stands for a quoted post that twscrape also returns: it is not a result.
+    parse = lambda o, limit=-1: iter([t["9"], t["1"], t["3"], t["2"]])  # noqa: E731
+    assert [x.id_str for x in x_search.page_tweets(obj, parse)] == ["2", "1"]
+    # Unknown layout: fall back to everything twscrape found.
+    assert len(x_search.page_tweets({"data": {}}, parse)) == 4
+
+
+def test_count_is_respected_within_a_page(env, monkeypatch) -> None:
+    _fake_search(monkeypatch, [], [], pages=[[_tweet(id_str=str(i)) for i in range(21)]])
+    out = run(server.search_x("claude", count=10))
+    assert out["count"] == 10 and out["requests"] == 1

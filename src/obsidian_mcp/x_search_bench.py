@@ -120,8 +120,11 @@ def default_cases(now: datetime) -> list[Case]:
             "lang is fr": check_lang("fr"),
             "keywords in post": lambda p: all(w in _text(p) for w in ("intelligence", "artificielle")),
         }),
+        # Seen on 2026-11-05: X counts until: as inclusive and uses the account's time
+        # zone (results up to 21:59 UTC on the until day), so allow day ends +-14 h.
         Case("since:/until:", f"election since:{start} until:{end}",
-             {f"date in [{start}, {end})": check_between(s, e)}),
+             {f"date in {start}..{end} (account time zone)":
+              check_between(s - timedelta(hours=14), e + timedelta(days=1, hours=14))}),
         Case("min_faves:", "AI min_faves:1000", {"likes >= 1000": check_min_likes(1000)}),
         Case("\"exact phrase\"", '"open source"', {"phrase present": check_phrase("open source")}),
         Case("-word", "python -django", {
@@ -179,7 +182,7 @@ class Bench:
             q = x_search._quota(rep.headers, self.account)
             if q:
                 self.quota = q
-            posts = [x_search._post(t) for t in parse_tweets(rep.json(), -1)]
+            posts = [x_search._post(t) for t in x_search.page_tweets(rep.json(), parse_tweets)]
             self.requests.append({"query": query, "posts": len(posts), "seconds": round(spent, 2),
                                   "remaining": (q or {}).get("remaining")})
             n += 1
