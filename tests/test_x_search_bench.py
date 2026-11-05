@@ -164,3 +164,8 @@ def test_only_and_main_output(fake_x, capsys) -> None:
 def test_not_configured(monkeypatch, capsys) -> None:
     monkeypatch.delenv(x_search.COOKIES_ENV, raising=False)
     assert bench.main([]) == 1 and "not configured" in capsys.readouterr().err
+
+
+def test_phrase_ignores_punctuation() -> None:
+    assert bench.check_phrase("open source")(post(text="Love open-source tools"))
+    assert bench.check_phrase("open source")(post(text="#OpenSource"))  is False

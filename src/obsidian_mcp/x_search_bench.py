@@ -78,7 +78,9 @@ def check_phrase(phrase: str) -> Check:
     def ok(p: dict[str, Any]) -> bool:
         hay = _text(p) + " " + " ".join(p.get("links") or []).lower()
         hay += " " + _text(p.get("quoted") or {})
-        return phrase.lower() in re.sub(r"\s+", " ", hay)
+        # X ignores punctuation inside a phrase: "open-source" matches "open source".
+        norm = lambda t: re.sub(r"[\W_]+", " ", t.lower()).strip()  # noqa: E731
+        return norm(phrase) in norm(hay)
     return ok
 
 
