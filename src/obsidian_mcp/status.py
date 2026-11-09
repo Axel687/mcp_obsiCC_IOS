@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 import requests
 
 from . import sync, x_post, x_search, youtube, youtube_search
+from .vault import VaultError, configured_vaults
 
 USAGE_FILE = "usage.json"
 CHECK_TIMEOUT = 15
@@ -52,7 +53,7 @@ _VAULT_TOOLS = {
     "vault_overview", "list_notes", "read_note", "search_notes", "list_tags",
     "notes_with_tag", "get_backlinks", "get_links", "find_orphans", "read_pdf",
     "append_note", "insert_under_heading", "write_note", "delete_note", "sync_vault",
-    "generate_graph",
+    "generate_graph", "list_vaults",
 }
 for _name in _VAULT_TOOLS:
     DEPENDS_ON[_name] = ["vault_git"]
@@ -166,10 +167,7 @@ def _timed(fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
-def check_vault_git() -> dict[str, Any]:
-    if not sync.is_enabled():
-        return _result("not_configured", "OBSIDIAN_VAULT_REMOTE is not set (local vault only)")
-    root = Path(os.environ.get("OBSIDIAN_VAULT", "")).expanduser()
+def _check_one_vault(root: Path) -> dict[str, Any]:
     if not (root / ".git").is_dir():
         return _result("error", f"no Git clone of the vault at {root}")
     remote = sync._git("ls-remote", "--heads", "origin", cwd=root, check=False)
@@ -188,6 +186,31 @@ def check_vault_git() -> dict[str, Any]:
     if extra.get("unpushed_commits"):
         return _result("warning", "repository reachable, but local commits are not pushed", **extra)
     return _result("ok", "repository reachable (read and write token)", **extra)
+
+
+_RANK = {"ok": 0, "not_configured": 1, "warning": 2, "error": 3}
+
+
+def check_vault_git() -> dict[str, Any]:
+    """Check the Git repository of every vault. With one vault the answer is the same as
+    before; with several, `vaults` holds one result per vault and the state is the worst."""
+    try:
+        vaults = {n: v for n, v in configured_vaults().items() if v.remote}
+    except VaultError as exc:
+        return _result("error", f"vault configuration: {exc}")
+    if not vaults:
+        return _result("not_configured", "OBSIDIAN_VAULT_REMOTE is not set (local vault only)")
+    results = {name: _check_one_vault(v.path.expanduser()) for name, v in vaults.items()}
+    if len(results) == 1:
+        return next(iter(results.values()))
+    worst = max(results.values(), key=lambda r: _RANK.get(r["state"], 3))["state"]
+    bad = [n for n, r in results.items() if r["state"] != "ok"]
+    detail = (
+        f"{len(results)} vault repositories reachable"
+        if not bad
+        else "problem with " + ", ".join(f"{n} ({results[n]['detail']})" for n in bad)
+    )
+    return _result(worst, detail, vaults=results)
 
 
 def check_youtube_proxy() -> dict[str, Any]:

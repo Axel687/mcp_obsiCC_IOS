@@ -8,6 +8,7 @@ services:
       OBSIDIAN_MCP_PUBLIC_URL: https://${MCP_DOMAIN}
     volumes:
       - vault:/data/vault
+      - vaults:/data/vaults  # extra vaults (OBSIDIAN_EXTRA_VAULTS)
       - state:/data/state
     # Not published on the host: only Caddy can reach it.
     expose:
@@ -34,6 +35,7 @@ services:
 
 volumes:
   vault:
+  vaults:
   state:
   caddy_data:
   caddy_config:

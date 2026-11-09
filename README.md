@@ -180,7 +180,10 @@ locally, e.g. from a cloud sandbox.
 | `OBSIDIAN_X_SEARCH_COOKIES` | *(unset)* | Browser cookies of the dedicated account for `search_x`: `auth_token=...; ct0=...` |
 | `OBSIDIAN_X_SEARCH_ACCOUNT` | `OBSIDIAN_X_INBOX_ACCOUNT` | Username (no @) of that account |
 | `OBSIDIAN_VAULT_REMOTE` | *(unset)* | Git URL of the vault repo — enables sync |
-| `OBSIDIAN_GIT_TOKEN` | *(unset)* | Token for HTTPS git auth (e.g. GitHub fine-grained PAT) |
+| `OBSIDIAN_VAULT_NAME` | `principal` | Name of the main vault (used by `vault`, see below) |
+| `OBSIDIAN_EXTRA_VAULTS` | *(unset)* | More vaults: `name=repo;name2=repo2` (a local path instead of a URL means no sync) |
+| `OBSIDIAN_VAULTS_DIR` | `vaults` next to `OBSIDIAN_VAULT` | Where extra vaults are cloned (`/data/vaults` in Docker) |
+| `OBSIDIAN_GIT_TOKEN` | *(unset)* | Token for HTTPS git auth (e.g. GitHub fine-grained PAT), shared by every vault |
 | `OBSIDIAN_PULL_INTERVAL` | `30` | Min seconds between automatic pulls; `0` = every call, negative = never |
 | `OBSIDIAN_AUTO_PUSH` | `true` | Commit + push after every write |
 | `OBSIDIAN_GIT_NAME` / `OBSIDIAN_GIT_EMAIL` | `Obsidian MCP` / `obsidian-mcp@local` | Commit identity |
@@ -188,10 +191,30 @@ locally, e.g. from a cloud sandbox.
 | `OBSIDIAN_GRAPHS_DIR` | `attachments/graphs` | Where generated graphs are written |
 | `OBSIDIAN_GRAPH_TIMEOUT` | `30` | Seconds before graph subprocesses are killed |
 
+## Several vaults
+
+Set `OBSIDIAN_EXTRA_VAULTS` to serve more vaults from the same server, each with its own
+Git repo, clone and sync. Every vault tool then takes an optional `vault` argument:
+
+- `list_vaults()` lists them (main one first, note count, whether a `CLAUDE.md` /
+  `AGENTS.md` is present). The server instructions tell the AI to ask the user which
+  vault to use at the start of a conversation and to pass it to every call.
+- Reads without `vault` use the main vault.
+- Changes (`write_note`, `append_note`, `insert_under_heading`, `delete_note`,
+  `generate_graph`) are refused without an explicit `vault` when there is more than one,
+  so nothing lands in a vault the user did not pick.
+- `sync_vault()` without `vault` syncs them all; `ecosystem_status` checks every repo.
+
+MCP has no session the server could remember the choice in (the protocol is stateless),
+so the choice lives in the conversation: the AI repeats `vault` on each call.
+
 ## Tools
+
+All vault tools below also accept `vault` (see above).
 
 | Tool | What it does |
 | --- | --- |
+| `list_vaults()` | The configured vaults, main one first. |
 | `vault_overview()` | Note count, folders, top tags, most linked notes, orphans, unresolved links. |
 | `list_notes(subdir?)` | List every `.md` file in the vault (or under a subdir). |
 | `read_note(path)` | Return a note's full markdown content. |
@@ -206,7 +229,7 @@ locally, e.g. from a cloud sandbox.
 | `insert_under_heading(path, heading, content, create_if_missing=true)` | Insert text at the end of a section. |
 | `delete_note(path)` | Delete a note (committed, so recoverable from Git history). |
 | `read_pdf(path, page_start?, page_end?, joined=true)` | Extract PDF text. |
-| `sync_vault(action="both")` | Manually pull/push/both. No-op if Git sync is off. |
+| `sync_vault(action="both")` | Manually pull/push/both (every vault unless `vault` is given). No-op if Git sync is off. |
 | `generate_graph(code, filename?, dpi=150, timeout?, embed_in_note?, alt_text?)` | Run matplotlib code and save a figure (see below). |
 
 Links follow Obsidian's rules: `[[Note]]`, `[[Note#Heading]]`, `[[Note|alias]]`, embeds
