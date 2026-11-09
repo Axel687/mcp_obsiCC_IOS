@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
-from contextlib import contextmanager
 from dataclasses import asdict
-from typing import Any, Iterator
+from typing import Any
 
 from mcp.server.apps import Apps
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
@@ -22,7 +21,7 @@ from mcp.types import ToolAnnotations
 from . import graphs, links, notes, pdf, status, sync, x_post, x_search, youtube, youtube_search
 from .config import ConfigError, Settings, load_settings
 from .notes import embed_attachment
-from .vault import VaultError
+from .vault import Vault, VaultError, configured_vaults, use_vault
 
 INSTRUCTIONS = """\
 This server is the user's Obsidian vault, their "second brain". Paths are relative to
@@ -33,7 +32,17 @@ the vault root; the `.md` suffix is optional. Good habits:
 - Read a note before rewriting it, and prefer `append_note` or `insert_under_heading`
   over `write_note(overwrite=true)`: the user may be editing the same note on another
   device. Use wikilinks ([[Note]]) when referring to other notes.
+- The server can hold several vaults. If `list_vaults` reports more than one and the
+  user has not said which to use, call it and ask them once, at the start of the
+  conversation, then pass that name as `vault` to every call. Reads default to the
+  main vault; changes are refused without an explicit `vault`. Each vault may have its
+  own rules file (CLAUDE.md / AGENTS.md at its root): read it before working there.
 """
+
+VAULT_DOC = (
+    "\n\n`vault`: name of the vault to use (see `list_vaults`). Optional for reading "
+    "(main vault by default); required for changes when several vaults are configured."
+)
 
 
 def _log(message: str) -> None:
@@ -56,24 +65,42 @@ def _refresh(payload: dict[str, Any]) -> None:
         payload["sync_warning"] = f"could not pull latest changes, answering from local copy: {exc}"
 
 
-def _read(fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
-    payload: dict[str, Any] = {}
-    _refresh(payload)
+def _tag(vault: Vault) -> dict[str, Any]:
+    """Name the vault in the answer, but only when there is a choice of vaults."""
+    return {"vault": vault.name} if len(configured_vaults()) > 1 else {}
+
+
+def _read(fn: Callable[[], dict[str, Any]], vault: str | None = None) -> dict[str, Any]:
     try:
-        result = fn()
+        with use_vault(vault) as v:
+            payload: dict[str, Any] = _tag(v)
+            _refresh(payload)
+            try:
+                result = fn()
+            except VaultError as exc:
+                return {**_err(exc), **payload}
+            return {"ok": True, **result, **payload}
+    except VaultError as exc:  # unknown vault, bad configuration
+        return _err(exc)
+
+
+def _write(
+    vault: str | None, action: str, fn: Callable[[], tuple[str, dict[str, Any]]]
+) -> dict[str, Any]:
+    """Run a change on one vault: pick the vault (explicitly when there are several),
+    then hold the git lock for pull → write → commit → push, so a background pull
+    can't rebase under a half-written file. `fn` returns (path, payload)."""
+    try:
+        with use_vault(vault, explicit=True) as v, sync.lock:
+            extra: dict[str, Any] = _tag(v)
+            _refresh(extra)
+            try:
+                path, payload = fn()
+            except VaultError as exc:
+                return {**_err(exc), **extra}
+            return _with_sync(action, path, {"ok": True, **payload, **extra})
     except VaultError as exc:
-        return {**_err(exc), **payload}
-    return {"ok": True, **result, **payload}
-
-
-@contextmanager
-def _writing() -> Iterator[dict[str, Any]]:
-    """Hold the git lock for pull → write → commit → push, so a background pull can't
-    rebase under a half-written file."""
-    payload: dict[str, Any] = {}
-    with sync.lock:
-        _refresh(payload)
-        yield payload
+        return _err(exc)
 
 
 def _with_sync(action: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -90,34 +117,36 @@ def _with_sync(action: str, path: str, payload: dict[str, Any]) -> dict[str, Any
 # -- notes ---------------------------------------------------------------------------
 
 
-def list_notes(subdir: str | None = None) -> dict[str, Any]:
+def list_notes(subdir: str | None = None, vault: str | None = None) -> dict[str, Any]:
     """List all markdown notes in the vault (optionally scoped to a subdirectory)."""
-    return _read(lambda: {"notes": notes.list_notes(subdir)})
+    return _read(lambda: {"notes": notes.list_notes(subdir)}, vault)
 
 
-def read_note(path: str) -> dict[str, Any]:
+def read_note(path: str, vault: str | None = None) -> dict[str, Any]:
     """Read a note's full markdown content. `path` is vault-relative; the `.md` suffix is optional."""
-    return _read(lambda: {"path": path, "content": notes.read_note(path)})
+    return _read(lambda: {"path": path, "content": notes.read_note(path)}, vault)
 
 
-def write_note(path: str, content: str, overwrite: bool = False) -> dict[str, Any]:
+def write_note(
+    path: str, content: str, overwrite: bool = False, vault: str | None = None
+) -> dict[str, Any]:
     """Create a note (or overwrite if `overwrite=true`). Creates parent directories as needed."""
-    with _writing() as extra:
-        try:
-            written = notes.write_note(path, content, overwrite=overwrite)
-            return _with_sync("write", written, {"ok": True, "path": written, **extra})
-        except VaultError as exc:
-            return {**_err(exc), **extra}
+
+    def run() -> tuple[str, dict[str, Any]]:
+        written = notes.write_note(path, content, overwrite=overwrite)
+        return written, {"path": written}
+
+    return _write(vault, "write", run)
 
 
-def append_note(path: str, content: str) -> dict[str, Any]:
+def append_note(path: str, content: str, vault: str | None = None) -> dict[str, Any]:
     """Append text to the end of a note (creates the note if it doesn't exist)."""
-    with _writing() as extra:
-        try:
-            written = notes.append_note(path, content)
-            return _with_sync("append", written, {"ok": True, "path": written, **extra})
-        except VaultError as exc:
-            return {**_err(exc), **extra}
+
+    def run() -> tuple[str, dict[str, Any]]:
+        written = notes.append_note(path, content)
+        return written, {"path": written}
+
+    return _write(vault, "append", run)
 
 
 def insert_under_heading(
@@ -125,53 +154,48 @@ def insert_under_heading(
     heading: str,
     content: str,
     create_if_missing: bool = True,
+    vault: str | None = None,
 ) -> dict[str, Any]:
     """Insert text at the end of the section whose heading matches `heading` exactly.
 
     If the heading isn't present and `create_if_missing` is true, a new `## heading`
     section is appended with the content underneath.
     """
-    with _writing() as extra:
-        try:
-            written = notes.insert_under_heading(
-                path, heading, content, create_if_missing=create_if_missing
-            )
-            return _with_sync("insert", written, {"ok": True, "path": written, **extra})
-        except VaultError as exc:
-            return {**_err(exc), **extra}
+
+    def run() -> tuple[str, dict[str, Any]]:
+        written = notes.insert_under_heading(
+            path, heading, content, create_if_missing=create_if_missing
+        )
+        return written, {"path": written}
+
+    return _write(vault, "insert", run)
 
 
-def search_notes(query: str, regex: bool = False, max_results: int = 200) -> dict[str, Any]:
+def search_notes(
+    query: str, regex: bool = False, max_results: int = 200, vault: str | None = None
+) -> dict[str, Any]:
     """Search note contents. Default is case-insensitive substring; pass `regex=true` for regex."""
 
     def run() -> dict[str, Any]:
         hits = notes.search_notes(query, regex=regex, max_results=max_results)
         return {"count": len(hits), "hits": [asdict(h) for h in hits]}
 
-    return _read(run)
+    return _read(run, vault)
 
 
-def delete_note(path: str) -> dict[str, Any]:
+def delete_note(path: str, vault: str | None = None) -> dict[str, Any]:
     """Delete a note from the vault. The deletion is committed, so it can be undone from Git history."""
-    with _writing() as extra:
-        try:
-            deleted = notes.delete_note(path)
-            return _with_sync("delete", deleted, {"ok": True, "deleted": deleted, **extra})
-        except VaultError as exc:
-            return {**_err(exc), **extra}
+
+    def run() -> tuple[str, dict[str, Any]]:
+        deleted = notes.delete_note(path)
+        return deleted, {"deleted": deleted}
+
+    return _write(vault, "delete", run)
 
 
-def sync_vault(action: str = "both") -> dict[str, Any]:
-    """Manually sync the vault with its Git remote.
-
-    `action` can be "pull", "push", or "both" (default). No-op if OBSIDIAN_VAULT_REMOTE
-    isn't configured. Reads already pull automatically every few seconds.
-    """
+def _sync_one(action: str) -> dict[str, Any]:
     if not sync.is_enabled():
-        return {"ok": True, "enabled": False, "note": "OBSIDIAN_VAULT_REMOTE not set"}
-    action = action.lower()
-    if action not in {"pull", "push", "both"}:
-        return _err(VaultError(f"unknown action {action!r} (expected pull|push|both)"))
+        return {"ok": True, "enabled": False, "note": "no Git remote for this vault"}
     result: dict[str, Any] = {"ok": True, "enabled": True}
     try:
         if action in {"pull", "both"}:
@@ -183,46 +207,101 @@ def sync_vault(action: str = "both") -> dict[str, Any]:
     return result
 
 
+def sync_vault(action: str = "both", vault: str | None = None) -> dict[str, Any]:
+    """Manually sync the vault with its Git remote.
+
+    `action` can be "pull", "push", or "both" (default). No-op for a vault without a
+    Git remote. Reads already pull automatically every few seconds. Without `vault`,
+    every configured vault is synced.
+    """
+    action = action.lower()
+    if action not in {"pull", "push", "both"}:
+        return _err(VaultError(f"unknown action {action!r} (expected pull|push|both)"))
+    try:
+        names = [vault] if vault is not None else list(configured_vaults())
+        if len(names) <= 1:
+            with use_vault(vault):
+                return _sync_one(action)
+        results: dict[str, Any] = {}
+        for name in names:
+            with use_vault(name):
+                results[name] = _sync_one(action)
+    except VaultError as exc:
+        return _err(exc)
+    return {"ok": all(r.get("ok") for r in results.values()), "vaults": results}
+
+
+def list_vaults() -> dict[str, Any]:
+    """The vaults this server can use, main one first. When there are several and the
+    user has not said which one to use, ask them (once per conversation), then pass its
+    name as `vault` to the other tools."""
+    try:
+        vaults = configured_vaults()
+    except VaultError as exc:
+        return _err(exc)
+    out: list[dict[str, Any]] = []
+    for name, v in vaults.items():
+        entry: dict[str, Any] = {"name": name, "main": v.main, "git_sync": v.remote is not None}
+        if v.remote:
+            entry["repository"] = v.remote
+        try:
+            with use_vault(name):
+                entry["note_count"] = len(notes.list_notes(None))
+                entry["has_rules_file"] = any(
+                    (v.path / f).is_file() for f in ("CLAUDE.md", "AGENTS.md")
+                )
+        except VaultError as exc:
+            entry["error"] = str(exc)
+        out.append(entry)
+    return {
+        "ok": True,
+        "count": len(out),
+        "default": out[0]["name"] if out else None,
+        "choice_needed": len(out) > 1,
+        "vaults": out,
+    }
+
+
 # -- graph of the vault: tags, links ---------------------------------------------------
 
 
-def vault_overview() -> dict[str, Any]:
+def vault_overview(vault: str | None = None) -> dict[str, Any]:
     """Map of the vault: note count, folders, most used tags, most linked notes, orphans
     and unresolved links. A good first call to get oriented."""
-    return _read(links.overview)
+    return _read(links.overview, vault)
 
 
-def list_tags(prefix: str | None = None) -> dict[str, Any]:
+def list_tags(prefix: str | None = None, vault: str | None = None) -> dict[str, Any]:
     """List tags with how many notes use each (frontmatter and inline #tags).
 
     With `prefix="philo"`, only `#philo` and nested tags like `#philo/nietzsche`.
     """
-    return _read(lambda: {"tags": links.list_tags(prefix)})
+    return _read(lambda: {"tags": links.list_tags(prefix)}, vault)
 
 
-def notes_with_tag(tag: str, include_nested: bool = True) -> dict[str, Any]:
+def notes_with_tag(tag: str, include_nested: bool = True, vault: str | None = None) -> dict[str, Any]:
     """Notes carrying a tag. `#` is optional; nested tags (`tag/sub`) are included by default."""
 
     def run() -> dict[str, Any]:
         found = links.notes_with_tag(tag, include_nested=include_nested)
         return {"tag": tag.lstrip("#"), "count": len(found), "notes": found}
 
-    return _read(run)
+    return _read(run, vault)
 
 
-def get_backlinks(path: str) -> dict[str, Any]:
+def get_backlinks(path: str, vault: str | None = None) -> dict[str, Any]:
     """Notes that link to this one (wikilinks, embeds and markdown links), with the line
     containing each link. Accepts a vault path or a bare note name."""
-    return _read(lambda: links.backlinks(path))
+    return _read(lambda: links.backlinks(path), vault)
 
 
-def get_links(path: str) -> dict[str, Any]:
+def get_links(path: str, vault: str | None = None) -> dict[str, Any]:
     """Links going out of a note, each resolved to a vault path when the target exists;
     `unresolved` lists links to notes that don't exist yet."""
-    return _read(lambda: links.outgoing_links(path))
+    return _read(lambda: links.outgoing_links(path), vault)
 
 
-def find_orphans(include_without_outgoing: bool = False) -> dict[str, Any]:
+def find_orphans(include_without_outgoing: bool = False, vault: str | None = None) -> dict[str, Any]:
     """Notes no other note links to. With `include_without_outgoing=true`, only notes
     that are completely isolated (no links in either direction)."""
 
@@ -230,7 +309,7 @@ def find_orphans(include_without_outgoing: bool = False) -> dict[str, Any]:
         found = links.find_orphans(include_without_outgoing)
         return {"count": len(found), "notes": found}
 
-    return _read(run)
+    return _read(run, vault)
 
 
 # -- attachments -----------------------------------------------------------------------
@@ -241,6 +320,7 @@ def read_pdf(
     page_start: int | None = None,
     page_end: int | None = None,
     joined: bool = True,
+    vault: str | None = None,
 ) -> dict[str, Any]:
     """Extract text from a PDF stored in the vault. Pages are 1-indexed, inclusive.
 
@@ -256,7 +336,7 @@ def read_pdf(
             out["pages"] = extract.pages
         return out
 
-    return _read(run)
+    return _read(run, vault)
 
 
 def generate_graph(
@@ -266,6 +346,7 @@ def generate_graph(
     timeout: float | None = None,
     embed_in_note: str | None = None,
     alt_text: str | None = None,
+    vault: str | None = None,
 ) -> dict[str, Any]:
     """Run Python (matplotlib) code and save the resulting figure inside the vault.
 
@@ -273,16 +354,16 @@ def generate_graph(
     `fig` variable. If `embed_in_note` is provided, an Obsidian-style image link is
     appended to that note.
     """
-    with _writing() as extra:
-        try:
-            result = graphs.generate_graph(code, filename=filename, dpi=dpi, timeout=timeout)
-            payload: dict[str, Any] = {"ok": True, "path": result.path, **extra}
-            if embed_in_note:
-                embed_attachment(embed_in_note, result.path, alt_text=alt_text)
-                payload["embedded_in"] = embed_in_note
-            return _with_sync("graph", result.path, payload)
-        except VaultError as exc:
-            return {**_err(exc), **extra}
+
+    def run() -> tuple[str, dict[str, Any]]:
+        result = graphs.generate_graph(code, filename=filename, dpi=dpi, timeout=timeout)
+        payload: dict[str, Any] = {"path": result.path}
+        if embed_in_note:
+            embed_attachment(embed_in_note, result.path, alt_text=alt_text)
+            payload["embedded_in"] = embed_in_note
+        return result.path, payload
+
+    return _write(vault, "graph", run)
 
 
 # -- web -----------------------------------------------------------------------------
@@ -464,12 +545,21 @@ async def ecosystem_status(check: bool = True) -> dict[str, Any]:
 
 # -- assembly --------------------------------------------------------------------------
 
+# Every tool working on a vault documents its `vault` parameter the same way.
+for _fn in (
+    list_notes, read_note, write_note, append_note, insert_under_heading, search_notes,
+    delete_note, vault_overview, list_tags, notes_with_tag, get_backlinks,
+    get_links, find_orphans, read_pdf, generate_graph,
+):
+    _fn.__doc__ = (_fn.__doc__ or "").rstrip() + VAULT_DOC
+
 _READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
 _ADD = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
 _CHANGE = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False)
 _WEB = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=True)
 
 _TOOLS: list[tuple[Callable[..., Any], ToolAnnotations]] = [
+    (list_vaults, _READ),
     (vault_overview, _READ),
     (list_notes, _READ),
     (read_note, _READ),
@@ -545,13 +635,8 @@ def build_server(settings: Settings) -> MCPServer:
 
 def _bootstrap_sync() -> None:
     """Clone (if needed) and pull before serving any requests."""
-    if not sync.is_enabled():
-        return
-    try:
-        _log(sync.ensure_clone())
-        _log(f"pull: {sync.pull()}")
-    except VaultError as exc:
-        _log(f"sync bootstrap failed: {exc}")
+    for line in sync.bootstrap_all():
+        _log(line)
 
 
 def main() -> None:

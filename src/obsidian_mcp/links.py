@@ -54,7 +54,8 @@ class ParsedNote:
     lines: list[str] = field(default_factory=list)
 
 
-_cache: dict[str, tuple[float, ParsedNote]] = {}
+# vault root -> {vault-relative path -> (mtime, parsed note)}: one cache per vault.
+_cache: dict[str, dict[str, tuple[float, ParsedNote]]] = {}
 _cache_lock = threading.Lock()
 
 
@@ -140,6 +141,8 @@ class VaultIndex:
 
     def __init__(self) -> None:
         root = vault_root()
+        with _cache_lock:
+            cache = _cache.setdefault(str(root), {})
         self.notes: dict[str, ParsedNote] = {}
         live: set[str] = set()
         for rel in list_notes():
@@ -150,7 +153,7 @@ class VaultIndex:
             except OSError:
                 continue
             with _cache_lock:
-                cached = _cache.get(rel)
+                cached = cache.get(rel)
             if cached and cached[0] == mtime:
                 parsed = cached[1]
             else:
@@ -159,11 +162,11 @@ class VaultIndex:
                 except (OSError, UnicodeDecodeError):
                     continue
                 with _cache_lock:
-                    _cache[rel] = (mtime, parsed)
+                    cache[rel] = (mtime, parsed)
             self.notes[rel] = parsed
         with _cache_lock:
-            for stale in set(_cache) - live:
-                del _cache[stale]
+            for stale in set(cache) - live:
+                del cache[stale]
 
         self._by_path = {_nfc(p[:-3]).lower(): p for p in self.notes}
         self._by_name: dict[str, list[str]] = {}

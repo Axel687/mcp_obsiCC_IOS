@@ -5,7 +5,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 1000 mcp \
-    && mkdir -p /data/vault /data/state \
+    && mkdir -p /data/vault /data/vaults /data/state \
     && chown -R mcp:mcp /data
 
 WORKDIR /app
