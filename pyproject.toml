@@ -17,7 +17,7 @@ dependencies = [
     "matplotlib>=3.8.0",
     "youtube-transcript-api>=1.2,<2",
     "requests>=2.31",
-    "twscrape>=0.20",
+    "twscrape==0.21.1",  # pinned: X changes break it, upgrade on purpose and test
 ]
 
 [project.scripts]

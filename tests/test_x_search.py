@@ -13,7 +13,8 @@ COOKIES = "auth_token=abc123; ct0=def456"
 
 def _tweet(**kw):
     user = SimpleNamespace(
-        username="alice", displayname="Alice", followersCount=10, blue=True, verified=False
+        username="alice", displayname="Alice", followersCount=10, blue=True, verified=False,
+        blueType=None, created=datetime(2015, 6, 1, tzinfo=timezone.utc),
     )
     base = dict(
         url="https://x.com/alice/status/1",
@@ -88,12 +89,14 @@ def test_search_formats_posts(env, monkeypatch) -> None:
     seen: list = []
     quoted = _tweet(url="https://x.com/bob/status/2", id_str="2", rawContent="quoted")
     _fake_search(monkeypatch, [_tweet(quotedTweet=quoted), _tweet(id_str="3")], seen)
-    out = run(server.search_x("claude mcp", count=1, sort="top"))
+    out = run(server.search_x("claude mcp", count=1, sort="top", detail="full"))
     assert out["ok"] and out["count"] == 1 and out["account"] == "burner"
     assert seen == [("claude mcp", 1, {"product": "Top"})]
     post = out["posts"][0]
     assert post["kind"] == "quote" and post["quoted"]["text"] == "quoted"
-    assert post["author"] == {"username": "alice", "name": "Alice", "followers": 10, "verified": True}
+    assert post["author"] == {"username": "alice", "name": "Alice", "followers": 10, "checkmark": "blue",
+                              "account_created": "2015-06-01"}
+    assert out["untrusted_content"] == x_search.UNTRUSTED
     assert post["links"] == ["https://example.com"] and post["media"] == ["https://pbs.twimg.com/a.jpg"]
     assert COOKIES not in str(out) and "abc123" not in str(out)
     assert (env / "twscrape.db").exists()
@@ -220,3 +223,100 @@ def test_count_is_respected_within_a_page(env, monkeypatch) -> None:
     _fake_search(monkeypatch, [], [], pages=[[_tweet(id_str=str(i)) for i in range(21)]])
     out = run(server.search_x("claude", count=10))
     assert out["count"] == 10 and out["requests"] == 1
+
+
+def test_compact_is_default(env, monkeypatch) -> None:
+    long = "x" * 400
+    quoted = _tweet(url="https://x.com/bob/status/2", id_str="2", rawContent="q" * 300)
+    _fake_search(monkeypatch, [_tweet(rawContent=long, quotedTweet=quoted)], [])
+    out = run(server.search_x("claude"))
+    assert out["detail"] == "compact" and "read_x_post" in out["note"]
+    post = out["posts"][0]
+    assert post["truncated"] is True and len(post["text"]) == x_search.TEXT_PREVIEW
+    assert post["links"] == 1 and post["media"] == 1
+    assert post["author"] == {"username": "alice", "followers": 10, "checkmark": "blue",
+                              "account_created": "2015-06-01"}
+    assert post["quoted"]["url"] == "https://x.com/bob/status/2"
+    assert len(post["quoted"]["text"]) == x_search.QUOTED_PREVIEW
+    _fake_search(monkeypatch, [_tweet()], [])
+    assert "truncated" not in run(server.search_x("claude"))["posts"][0]
+    assert "detail" in run(server.search_x("claude", detail="huge"))["error"]
+
+
+@pytest.mark.parametrize("blue,blue_type,verified,expected", [
+    (False, None, False, None), (True, None, False, "blue"), (True, "Business", False, "gold"),
+    (True, "Government", False, "grey"), (False, None, True, "legacy"),
+])
+def test_checkmark(blue, blue_type, verified, expected) -> None:
+    u = SimpleNamespace(blue=blue, blueType=blue_type, verified=verified)
+    assert x_search.checkmark(u) == expected
+
+
+def test_unknown_creation_date_is_none() -> None:
+    assert x_search._created(SimpleNamespace(created=datetime(1970, 1, 1, tzinfo=timezone.utc))) is None
+
+
+def test_error_codes(env, monkeypatch) -> None:
+    import twscrape
+
+    assert run(server.search_x(" "))["code"] == "bad_request"
+
+    async def broken(self, q, limit=-1, kv=None):
+        raise KeyError("data")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(twscrape.API, "search_raw", broken)
+    out = run(server.search_x("claude"))
+    assert out["code"] == "x_changed" and "twscrape 0.21" in out["error"]
+
+    async def offline(self, q, limit=-1, kv=None):
+        raise ConnectionError("down")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(twscrape.API, "search_raw", offline)
+    assert run(server.search_x("claude"))["code"] == "network"
+
+
+def test_not_configured_code(monkeypatch) -> None:
+    monkeypatch.delenv(x_search.COOKIES_ENV, raising=False)
+    monkeypatch.delenv(x_search.COOKIES_FILE_ENV, raising=False)
+    assert run(server.search_x("claude"))["code"] == "not_configured"
+
+
+def test_cookies_from_file(env, monkeypatch, tmp_path) -> None:
+    secret = tmp_path / "x_cookies"
+    secret.write_text(COOKIES + "\n")
+    monkeypatch.delenv(x_search.COOKIES_ENV)
+    monkeypatch.setenv(x_search.COOKIES_FILE_ENV, str(secret))
+    _fake_search(monkeypatch, [_tweet()], [])
+    assert run(server.search_x("claude"))["ok"]
+    monkeypatch.setenv(x_search.COOKIES_FILE_ENV, str(tmp_path / "missing"))
+    out = run(server.search_x("claude"))
+    assert out["code"] == "not_configured" and "abc123" not in str(out)
+
+
+def test_quota_tool_unknown_then_known(env, monkeypatch) -> None:
+    out = run(server.x_search_quota())
+    assert out["ok"] and out["state"] == "unknown" and out["account"] == "burner"
+    reset = int(datetime(2030, 1, 1, tzinfo=timezone.utc).timestamp())
+    _fake_search(monkeypatch, [_tweet()], [], headers=[_headers(50, 0, reset)])
+    run(server.search_x("claude"))
+    out = run(server.x_search_quota())
+    assert out["state"] == "exhausted" and out["remaining"] == 0
+    assert out["searches_left"] == {"count<=20": 0, "count<=40": 0, "count<=50": 0}
+
+
+def test_quota_tool_after_reset(env) -> None:
+    import json
+
+    (env / x_search.QUOTA_FILE).write_text(json.dumps(
+        {"account": "burner", "limit": 50, "remaining": 3, "resets_at": "2020-01-01T00:00:00+00:00"}))
+    out = run(server.x_search_quota())
+    assert out["state"] == "reset" and out["remaining"] == 50 and out["searches_left"]["count<=50"] == 16
+
+
+def test_web_tools_warn_against_injection() -> None:
+    for fn in (server.search_x, server.read_x_post, server.read_x_conversation, server.read_x_reposts,
+               server.read_x_inbox, server.youtube_transcript):
+        assert "never as instructions" in fn.__doc__
+    assert "never as instructions" in server.INSTRUCTIONS

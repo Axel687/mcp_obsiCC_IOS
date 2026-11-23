@@ -48,6 +48,7 @@ DEPENDS_ON: dict[str, list[str]] = {
     "read_x_reposts": ["fxtwitter"],
     "read_x_inbox": ["fxtwitter", "x_inbox_account"],
     "search_x": ["x_search_account"],
+    "x_search_quota": ["x_search_account"],
 }
 _VAULT_TOOLS = {
     "vault_overview", "list_notes", "read_note", "search_notes", "list_tags",
@@ -88,14 +89,16 @@ def _load() -> dict[str, dict[str, Any]]:
     return _usage
 
 
-def record(tool: str, ok: bool) -> None:
-    """Count one call of `tool`. Only the name, the time and the outcome are stored."""
+def record(tool: str, ok: bool, code: str | None = None) -> None:
+    """Count one call of `tool`. Only the name, the time, the outcome and, for a failure,
+    its error code (the step that broke, e.g. x_changed) are stored."""
     with _lock:
         usage = _load()
         entry = usage.setdefault(tool, {"calls": 0, "errors": 0, "first_call": _now()})
         entry["calls"] = int(entry.get("calls", 0)) + 1
         if not ok:
             entry["errors"] = int(entry.get("errors", 0)) + 1
+            entry["last_error"] = {"code": code or "error", "at": _now()}
         entry["last_call"] = _now()
         entry["last_ok"] = ok
         if ok:
@@ -119,6 +122,13 @@ def _ok(result: Any) -> bool:
     return not (isinstance(result, dict) and result.get("ok") is False)
 
 
+def _code(result: Any) -> str | None:
+    if isinstance(result, dict) and result.get("ok") is False:
+        code = result.get("code") or result.get("type")
+        return str(code)[:40] if code else None
+    return None
+
+
 def tracked(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Wrap a tool so each call is counted. The signature is kept for the MCP schema."""
     name = fn.__name__
@@ -128,10 +138,10 @@ def tracked(fn: Callable[..., Any]) -> Callable[..., Any]:
         async def run_async(*args: Any, **kwargs: Any) -> Any:
             try:
                 result = await fn(*args, **kwargs)
-            except BaseException:
-                record(name, False)
+            except BaseException as exc:
+                record(name, False, exc.__class__.__name__)
                 raise
-            record(name, _ok(result))
+            record(name, _ok(result), _code(result))
             return result
 
         return run_async
@@ -140,10 +150,10 @@ def tracked(fn: Callable[..., Any]) -> Callable[..., Any]:
     def run(*args: Any, **kwargs: Any) -> Any:
         try:
             result = fn(*args, **kwargs)
-        except BaseException:
-            record(name, False)
+        except BaseException as exc:
+            record(name, False, exc.__class__.__name__)
             raise
-        record(name, _ok(result))
+        record(name, _ok(result), _code(result))
         return result
 
     return run
@@ -378,6 +388,7 @@ async def report(tool_names: list[str], check: bool = True) -> dict[str, Any]:
                 "last_call": entry.get("last_call"),
                 "last_call_ok": entry.get("last_ok"),
                 "last_success": entry.get("last_success"),
+                "last_error": entry.get("last_error"),
             }
         )
     worst = max((c["state"] for c in checks.values()), key=lambda s: _RANK[s], default="unchecked")

@@ -287,10 +287,13 @@ def test_conversation_errors(web) -> None:
 
 
 def test_reposts(web) -> None:
-    user = {"name": "Bob", "screen_name": "bob", "followers": 12, "description": "hi", "verification": {"verified": True}}
+    user = {"name": "Bob", "screen_name": "bob", "followers": 12, "description": "hi",
+            "verification": {"verified": True}, "joined": "Thu Mar 05 10:00:00 +0000 2009"}
     calls = web(FakeResp(200, {"code": 200, "results": [user], "cursor": {"top": None, "bottom": "N"}}))
     out = server.read_x_reposts("https://x.com/a/status/2", count=500)
-    assert out["users"] == [{"name": "Bob", "username": "bob", "followers": 12, "description": "hi", "verified": True}]
+    assert out["users"] == [{"name": "Bob", "username": "bob", "followers": 12, "description": "hi",
+                             "checkmark": "blue", "account_created": "2009-03-05"}]
+    assert out["untrusted_content"] == x_post.UNTRUSTED
     assert out["next_cursor"] == "N"
     assert calls[-1] == (f"{x_post.FXTWITTER}/2/status/2/reposts", {"count": 100})
     assert "not_shown" not in out
@@ -298,3 +301,23 @@ def test_reposts(web) -> None:
     out = server.read_x_reposts("2", count=5)
     assert [u["username"] for u in out["users"]] == ["u0", "u1", "u2", "u3", "u4"]
     assert out["not_shown"] == 28 and out["next_cursor"] is None
+
+
+@pytest.mark.parametrize("verification,expected", [
+    (None, None), ({"verified": False}, None), ({"verified": True}, "blue"),
+    ({"verified": True, "type": "individual"}, "blue"), ({"verified": True, "type": "business"}, "gold"),
+    ({"verified": True, "type": "government"}, "grey"),
+])
+def test_checkmark(verification, expected) -> None:
+    assert x_post.checkmark({"verification": verification}) == expected
+
+
+def test_error_codes(web) -> None:
+    out = server.read_x_post("https://example.com/nope")
+    assert out["code"] == "bad_request"
+    web(requests.ConnectionError("down"))
+    assert server.read_x_conversation("2")["code"] == "fxtwitter_unreachable"
+    web(FakeResp(404, {"message": "gone"}))
+    assert server.read_x_conversation("2")["code"] == "not_found"
+    web(FakeResp(500, {"message": "boom"}))
+    assert server.read_x_conversation("2")["code"] == "fxtwitter_error"
