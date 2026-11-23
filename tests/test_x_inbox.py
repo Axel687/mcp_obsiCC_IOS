@@ -81,7 +81,8 @@ def test_since_duration_and_date(fx) -> None:
 def test_nothing_new(fx) -> None:
     fx(FakeResp(204, None))
     out = server.read_x_inbox(account="axel_inbox", since="1h")
-    assert out == {"ok": True, "account": "axel_inbox", "count": 0, "posts": [], "next_cursor": None}
+    assert out == {"ok": True, "untrusted_content": x_post.UNTRUSTED, "account": "axel_inbox",
+                   "count": 0, "posts": [], "next_cursor": None}
 
 
 def test_errors(fx, monkeypatch) -> None:

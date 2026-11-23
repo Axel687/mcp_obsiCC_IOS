@@ -24,7 +24,7 @@ def test_tracked_counts_calls_without_content(state) -> None:
         return {"ok": True, "content": "secret text"}
 
     async def search_x(query: str) -> dict:
-        return {"ok": False, "error": "nope"}
+        return {"ok": False, "error": "nope", "code": "x_changed"}
 
     wrapped = status.tracked(read_note)
     assert wrapped.__name__ == "read_note"
@@ -38,6 +38,7 @@ def test_tracked_counts_calls_without_content(state) -> None:
     data = json.loads(saved)
     assert data["read_note"]["calls"] == 2 and data["read_note"]["last_ok"] is True
     assert data["search_x"]["errors"] == 1 and data["search_x"]["last_ok"] is False
+    assert data["search_x"]["last_error"]["code"] == "x_changed"
 
 
 def test_tracked_counts_exceptions(state) -> None:

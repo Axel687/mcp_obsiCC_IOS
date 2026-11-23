@@ -32,6 +32,17 @@ the Claude iPhone/iPad/Android apps through a self-hosted server.
   [twscrape](https://github.com/vladkens/twscrape) with the cookies of a **dedicated**
   X account: this is unofficial scraping, against X's terms, and X may lock or suspend
   that account. Never use your main account.
+  Results are **compact** by default (text cut at 280 characters, links and media
+  counted): the agent reads the posts worth it with `read_x_post`, or asks
+  `detail="full"`. Each author has `checkmark` (`blue` = X Premium, bought; `gold` =
+  organisation; `grey` = government) and `account_created`. `x_search_quota` tells
+  what is left of X's quota without contacting X, to plan a series of searches.
+  Failures carry a `code` (`not_configured`, `session_refused`, `busy`, `x_changed`,
+  `network`…) also kept by `ecosystem_status` as each tool's `last_error`, so a broken
+  step shows at once. twscrape is pinned: upgrade it on purpose when X breaks it.
+- **Web content is untrusted** — every X and YouTube result says so, and the server's
+  instructions tell the agent to treat posts and transcripts as data, never as
+  instructions, and never to write or delete notes because web content asks.
   To measure it for real (X's quota, posts per request, how far back pages go, and
   how well each search operator is honoured), run the bench on the server, one search
   at a time, stopping 10 requests before the quota runs out:
@@ -178,6 +189,7 @@ locally, e.g. from a cloud sandbox.
 | `OBSIDIAN_YOUTUBE_API_KEY` | *(unset)* | YouTube Data API v3 key for `youtube_search_videos` |
 | `OBSIDIAN_X_INBOX_ACCOUNT` | *(unset)* | Public X username (no @) read by `read_x_inbox` |
 | `OBSIDIAN_X_SEARCH_COOKIES` | *(unset)* | Browser cookies of the dedicated account for `search_x`: `auth_token=...; ct0=...` |
+| `OBSIDIAN_X_SEARCH_COOKIES_FILE` | *(unset)* | Instead of the variable above: path of a file holding those cookies, e.g. a Docker secret mounted at `/run/secrets/x_cookies` |
 | `OBSIDIAN_X_SEARCH_ACCOUNT` | `OBSIDIAN_X_INBOX_ACCOUNT` | Username (no @) of that account |
 | `OBSIDIAN_VAULT_REMOTE` | *(unset)* | Git URL of the vault repo — enables sync |
 | `OBSIDIAN_VAULT_NAME` | `principal` | Name of the main vault (used by `vault`, see below) |
