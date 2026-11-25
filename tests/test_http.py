@@ -122,7 +122,7 @@ def setup(tmp_path: Path):
     stop()
 
 
-def oauth_login(base: str) -> dict[str, Any]:
+def oauth_login(base: str, password: str = PASSWORD) -> dict[str, Any]:
     status, _, body = http("POST", base + "/register", data={
         "client_name": "Claude", "redirect_uris": [CALLBACK],
         "grant_types": ["authorization_code", "refresh_token"], "response_types": ["code"],
@@ -150,7 +150,7 @@ def oauth_login(base: str) -> dict[str, Any]:
     status, _, page = http("POST", base + "/login", form={"txn": txn, "password": "wrong"})
     assert status == 401 and "incorrect" in page
 
-    status, headers, _ = http("POST", base + "/login", form={"txn": txn, "password": PASSWORD})
+    status, headers, _ = http("POST", base + "/login", form={"txn": txn, "password": password})
     assert status == 302
     back = urllib.parse.urlparse(headers["location"])
     assert f"{back.scheme}://{back.netloc}{back.path}" == CALLBACK

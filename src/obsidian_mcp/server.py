@@ -18,10 +18,10 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
-from . import graphs, links, notes, pdf, status, sync, x_post, x_search, youtube, youtube_search
+from . import access, graphs, links, notes, pdf, skills, status, sync, x_post, x_search, youtube, youtube_search
 from .config import ConfigError, Settings, load_settings
 from .notes import embed_attachment
-from .vault import Vault, VaultError, configured_vaults, use_vault
+from .vault import Vault, VaultError, configured_vaults, use_vault, visible_vaults
 
 INSTRUCTIONS = """\
 This server is the user's Obsidian vault, their "second brain". Paths are relative to
@@ -67,7 +67,7 @@ def _refresh(payload: dict[str, Any]) -> None:
 
 def _tag(vault: Vault) -> dict[str, Any]:
     """Name the vault in the answer, but only when there is a choice of vaults."""
-    return {"vault": vault.name} if len(configured_vaults()) > 1 else {}
+    return {"vault": vault.name} if len(visible_vaults()) > 1 else {}
 
 
 def _read(fn: Callable[[], dict[str, Any]], vault: str | None = None) -> dict[str, Any]:
@@ -193,14 +193,14 @@ def delete_note(path: str, vault: str | None = None) -> dict[str, Any]:
     return _write(vault, "delete", run)
 
 
-def _sync_one(action: str) -> dict[str, Any]:
+def _sync_one(action: str, can_push: bool = True) -> dict[str, Any]:
     if not sync.is_enabled():
         return {"ok": True, "enabled": False, "note": "no Git remote for this vault"}
     result: dict[str, Any] = {"ok": True, "enabled": True}
     try:
-        if action in {"pull", "both"}:
+        if action in {"pull", "both"} or not can_push:
             result["pull"] = sync.pull()
-        if action in {"push", "both"}:
+        if action in {"push", "both"} and can_push:
             result["push"] = sync.commit_and_push("obsidian-mcp: manual sync")
     except VaultError as exc:
         return _err(exc)
@@ -217,15 +217,20 @@ def sync_vault(action: str = "both", vault: str | None = None) -> dict[str, Any]
     action = action.lower()
     if action not in {"pull", "push", "both"}:
         return _err(VaultError(f"unknown action {action!r} (expected pull|push|both)"))
+    agent = access.current_agent()
+
+    def can_push(name: str) -> bool:  # an agent never pushes a vault it may only read
+        return agent is None or agent.can_write(name)
+
     try:
-        names = [vault] if vault is not None else list(configured_vaults())
+        names = [vault] if vault is not None else list(visible_vaults())
         if len(names) <= 1:
-            with use_vault(vault):
-                return _sync_one(action)
+            with use_vault(vault) as v:
+                return _sync_one(action, can_push(v.name))
         results: dict[str, Any] = {}
         for name in names:
-            with use_vault(name):
-                results[name] = _sync_one(action)
+            with use_vault(name) as v:
+                results[name] = _sync_one(action, can_push(v.name))
     except VaultError as exc:
         return _err(exc)
     return {"ok": all(r.get("ok") for r in results.values()), "vaults": results}
@@ -235,15 +240,20 @@ def list_vaults() -> dict[str, Any]:
     """The vaults this server can use, main one first. When there are several and the
     user has not said which one to use, ask them (once per conversation), then pass its
     name as `vault` to the other tools."""
+    agent = access.current_agent()
     try:
-        vaults = configured_vaults()
+        vaults = visible_vaults()
     except VaultError as exc:
         return _err(exc)
     out: list[dict[str, Any]] = []
     for name, v in vaults.items():
-        entry: dict[str, Any] = {"name": name, "main": v.main, "git_sync": v.remote is not None}
-        if v.remote:
-            entry["repository"] = v.remote
+        entry: dict[str, Any] = {"name": name, "git_sync": v.remote is not None}
+        if agent is None:
+            entry["main"] = v.main
+            if v.remote:
+                entry["repository"] = v.remote
+        else:
+            entry["access"] = "read-write" if agent.can_write(name) else "read-only"
         try:
             with use_vault(name):
                 entry["note_count"] = len(notes.list_notes(None))
@@ -253,13 +263,20 @@ def list_vaults() -> dict[str, Any]:
         except VaultError as exc:
             entry["error"] = str(exc)
         out.append(entry)
-    return {
+    result: dict[str, Any] = {
         "ok": True,
         "count": len(out),
-        "default": out[0]["name"] if out else None,
-        "choice_needed": len(out) > 1,
+        "default": (agent.default_vault if agent else None) or (out[0]["name"] if out else None),
+        "choice_needed": len(out) > 1 and agent is None,
         "vaults": out,
     }
+    if agent is not None:
+        result["agent"] = agent.name
+        result["note"] = (
+            "You are logged in as an agent: without `vault`, reads and changes use your "
+            "default vault. Vaults marked read-only cannot be changed."
+        )
+    return result
 
 
 # -- graph of the vault: tags, links ---------------------------------------------------
@@ -540,6 +557,8 @@ async def ecosystem_status(check: bool = True) -> dict[str, Any]:
     The Revolut server is separate: call revolut_accounts for its state.
     In Claude, the result also shows as an interactive card with a "Revérifier" button.
     """
+    if access.current_agent() is not None:
+        return _err(VaultError("ecosystem_status is reserved to the owner of this server"))
     return {"ok": True, **await status.report(_registered, check)}
 
 
@@ -621,7 +640,13 @@ def build_server(settings: Settings) -> MCPServer:
     for fn, annotations in tools:
         if fn is ecosystem_status:
             apps.tool(resource_uri=STATUS_APP_URI, annotations=annotations)(status.tracked(fn))
-    server = MCPServer("obsidian-mcp", instructions=INSTRUCTIONS, extensions=[apps], **kwargs)
+    extensions: list[Any] = [apps]
+    if skills.skills_vault_name():
+        # Skills over MCP: each agent gets the role skills of the skills vault.
+        extensions.append(skills.SkillsExtension())
+    server = MCPServer("obsidian-mcp", instructions=INSTRUCTIONS, extensions=extensions, **kwargs)
+    if skills.skills_vault_name():
+        skills.install(server)
     for fn, annotations in tools:
         if fn is not ecosystem_status:
             server.add_tool(status.tracked(fn), annotations=annotations)
@@ -636,6 +661,8 @@ def build_server(settings: Settings) -> MCPServer:
 def _bootstrap_sync() -> None:
     """Clone (if needed) and pull before serving any requests."""
     for line in sync.bootstrap_all():
+        _log(line)
+    for line in access.startup_report():
         _log(line)
 
 

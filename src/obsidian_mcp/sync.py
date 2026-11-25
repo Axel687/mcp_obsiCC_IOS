@@ -25,7 +25,7 @@ import threading
 import time
 from pathlib import Path
 
-from .vault import VaultError, configured_vaults, get_vault, use_vault, vault_root
+from .vault import VaultError, configured_vaults, get_vault, repo_root, use_vault
 
 
 class SyncError(VaultError):
@@ -99,7 +99,7 @@ def ensure_clone() -> str:
     if not remote:
         return "sync disabled"
 
-    root = get_vault().path
+    root = get_vault().repo
 
     if (root / ".git").is_dir():
         _configure_identity(root)
@@ -113,6 +113,9 @@ def ensure_clone() -> str:
     root.parent.mkdir(parents=True, exist_ok=True)
     _git("clone", remote, str(root), cwd=root.parent)
     _configure_identity(root)
+    vault = get_vault()
+    if vault.clone is not None and not vault.path.is_dir():
+        return f"cloned {remote} -> {root}, but folder {vault.path.relative_to(root)} is missing"
     return f"cloned {remote} -> {root}"
 
 
@@ -141,7 +144,7 @@ def pull() -> str:
     """Fetch and rebase from the remote. No-op if sync is disabled."""
     if not is_enabled():
         return "sync disabled"
-    root = vault_root()
+    root = repo_root()
     with lock:
         return _pull_locked(root)
 
@@ -164,7 +167,7 @@ def maybe_pull() -> str | None:
     name = get_vault().name
     if time.monotonic() - _last(name) < interval:
         return None
-    root = vault_root()
+    root = repo_root()
     with lock:
         # Another thread may have pulled while we waited for the lock.
         if time.monotonic() - _last(name) < interval:
@@ -181,7 +184,7 @@ def commit_and_push(message: str) -> str:
     """Stage everything, commit (if there are changes), then push. Idempotent on clean tree."""
     if not is_enabled():
         return "sync disabled"
-    root = vault_root()
+    root = repo_root()
 
     with lock:
         _git("add", "-A", cwd=root)

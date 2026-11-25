@@ -8,6 +8,12 @@ Several vaults can be served at once:
   perso=https://github.com/me/perso.git"`, each cloned into
   `OBSIDIAN_VAULTS_DIR/<name>` (default: a `vaults` folder next to the main vault).
   A value that is not a URL is taken as a local path, with no Git sync.
+  A URL may end with `#sub/folder`: the vault is then that folder of the repository
+  (several vaults can live in one repository, each in its own folder and its own
+  clone).
+
+Who may use which vault (agents with their own login) is decided in ``access.py``:
+an agent only sees the vaults it is granted, and only writes where it has `rw`.
 
 The vault a tool works on is held in a context variable set by :func:`use_vault`, so
 the helpers below (and every module built on them) need no extra argument.
@@ -36,9 +42,15 @@ _current: ContextVar[str | None] = ContextVar("obsidian_vault", default=None)
 @dataclass(frozen=True)
 class Vault:
     name: str
-    path: Path
+    path: Path  # root of the vault (the notes)
     remote: str | None
     main: bool = False
+    clone: Path | None = None  # root of the Git clone when the vault is a sub-folder
+
+    @property
+    def repo(self) -> Path:
+        """Where Git runs: the clone, which is the vault itself unless it is a sub-folder."""
+        return self.clone or self.path
 
 
 def _is_remote(value: str) -> bool:
@@ -86,8 +98,16 @@ def configured_vaults() -> dict[str, Vault]:
             )
         if name in vaults:
             raise VaultError(f"OBSIDIAN_EXTRA_VAULTS: vault {name!r} is defined twice")
-        if _is_remote(value):
-            vaults[name] = Vault(name, base / name, value)
+        if _is_remote(value.partition("#")[0]):
+            url, _, sub = value.partition("#")
+            sub = sub.strip().strip("/")
+            if sub:
+                if any(part in ("", ".", "..") or part.startswith(".") for part in sub.split("/")):
+                    raise VaultError(f"OBSIDIAN_EXTRA_VAULTS: invalid folder {sub!r} for {name!r}")
+                clone = base / name
+                vaults[name] = Vault(name, clone / sub, url.strip(), clone=clone)
+            else:
+                vaults[name] = Vault(name, base / name, value)
         else:
             vaults[name] = Vault(name, Path(value).expanduser(), None)
     return vaults
@@ -119,11 +139,29 @@ def use_vault(name: str | None, *, explicit: bool = False) -> Iterator[Vault]:
     With `explicit=True` (write tools), `name` may only be omitted when a single vault
     is configured, so a change never lands in a vault the user did not choose.
     """
-    if explicit and name is None and len(configured_vaults()) > 1:
-        raise VaultError(
-            "several vaults are configured: pass `vault` explicitly for any change "
-            f"({', '.join(configured_vaults())}). Ask the user which one if unsure."
-        )
+    from . import access  # late import: access imports this module
+
+    agent = access.current_agent()
+    if agent is not None:
+        vault = get_vault(access.check(agent, name, write=explicit))
+    else:
+        if explicit and name is None and len(configured_vaults()) > 1:
+            raise VaultError(
+                "several vaults are configured: pass `vault` explicitly for any change "
+                f"({', '.join(configured_vaults())}). Ask the user which one if unsure."
+            )
+        vault = get_vault(name)
+    token = _current.set(vault.name)
+    try:
+        yield vault
+    finally:
+        _current.reset(token)
+
+
+@contextmanager
+def owner_use_vault(name: str) -> Iterator[Vault]:
+    """Select vault `name` without the agent check: only for server housekeeping
+    (pulling the skills vault), never with a name taken from a tool argument."""
     vault = get_vault(name)
     token = _current.set(vault.name)
     try:
@@ -140,6 +178,29 @@ def vault_root() -> Path:
             raise VaultError(f"OBSIDIAN_VAULT does not exist or is not a directory: {root}")
         raise VaultError(f"vault {vault.name!r} does not exist or is not a directory: {root}")
     return root
+
+
+def repo_root() -> Path:
+    """Root of the current vault's Git clone (the vault itself unless it is a sub-folder)."""
+    vault = get_vault()
+    if vault.clone is None:
+        return vault_root()
+    root = vault.clone.resolve()
+    if not (root / ".git").is_dir():
+        raise VaultError(f"vault {vault.name!r}: no Git clone at {root}")
+    return root
+
+
+def visible_vaults() -> dict[str, Vault]:
+    """The vaults the caller may see: all of them for the owner, the granted ones for an
+    agent (in the order of its grant)."""
+    from . import access
+
+    vaults = configured_vaults()
+    agent = access.current_agent()
+    if agent is None:
+        return vaults
+    return {n: vaults[n] for n in agent.vaults if n in vaults}
 
 
 def attachments_dir() -> Path:
