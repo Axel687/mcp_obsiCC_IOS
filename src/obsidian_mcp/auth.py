@@ -13,6 +13,10 @@ Flow, seen from the phone:
 4. On success the browser goes back to Claude with a one-time code, which Claude
    exchanges for an access token (1 h) and a refresh token (30 days, rotated).
 
+Agents (``access.py``) log in on the same page with their own secret instead of the
+password; their tokens carry ``agent:<name>`` as subject and only reach the vaults
+they were granted. Owner tokens carry ``owner``.
+
 Besides OAuth, an optional static bearer token (``OBSIDIAN_MCP_TOKEN``) lets Claude
 Code connect with a plain ``Authorization`` header.
 
@@ -54,6 +58,7 @@ from mcp.server.auth.provider import (
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
+from . import access
 from .config import Settings
 
 ACCESS_TOKEN_TTL = 60 * 60  # 1 hour
@@ -205,9 +210,14 @@ class VaultOAuthProvider:
             pending = self._pending.get(txn)
             if pending is None:
                 raise KeyError(txn)
-            if not hmac.compare_digest(password.encode(), self.settings.password.encode()):
-                self._failures.append(time.time())
-                return None
+            if hmac.compare_digest(password.encode(), self.settings.password.encode()):
+                subject = access.OWNER
+            else:
+                agent = access.agent_for_secret(password)
+                if agent is None:
+                    self._failures.append(time.time())
+                    return None
+                subject = agent.subject
             del self._pending[txn]
             code = secrets.token_urlsafe(32)
             params = pending.params
@@ -220,7 +230,7 @@ class VaultOAuthProvider:
                 redirect_uri=params.redirect_uri,
                 redirect_uri_provided_explicitly=params.redirect_uri_provided_explicitly,
                 resource=params.resource,
-                subject="owner",
+                subject=subject,
             )
         return construct_redirect_uri(str(params.redirect_uri), code=code, state=params.state)
 
@@ -240,11 +250,18 @@ class VaultOAuthProvider:
             # One-time use.
             if self._codes.pop(authorization_code.code, None) is None:
                 raise TokenError(error="invalid_grant", error_description="authorization code already used")
-        return self._issue(client.client_id or "", authorization_code.scopes, authorization_code.resource)
+        return self._issue(
+            client.client_id or "",
+            authorization_code.scopes,
+            authorization_code.resource,
+            authorization_code.subject or access.OWNER,
+        )
 
     # -- tokens ----------------------------------------------------------------------
 
-    def _issue(self, client_id: str, scopes: list[str], resource: str | None) -> OAuthToken:
+    def _issue(
+        self, client_id: str, scopes: list[str], resource: str | None, subject: str
+    ) -> OAuthToken:
         access = secrets.token_urlsafe(32)
         refresh = secrets.token_urlsafe(32)
         now = int(time.time())
@@ -256,12 +273,14 @@ class VaultOAuthProvider:
                 "expires_at": now + ACCESS_TOKEN_TTL,
                 "resource": resource,
                 "refresh": _hash(refresh),
+                "subject": subject,
             }
             self.store.data["refresh"][_hash(refresh)] = {
                 "client_id": client_id,
                 "scopes": scopes,
                 "expires_at": now + REFRESH_TOKEN_TTL,
                 "resource": resource,
+                "subject": subject,
             }
             self.store.save()
         return OAuthToken(
@@ -281,7 +300,8 @@ class VaultOAuthProvider:
             scopes=raw["scopes"],
             expires_at=raw["expires_at"],
             resource=raw.get("resource"),
-            subject="owner",
+            # Tokens issued before agents existed have no subject: they are the owner's.
+            subject=raw.get("subject", access.OWNER),
         )
 
     async def exchange_refresh_token(
@@ -294,12 +314,19 @@ class VaultOAuthProvider:
             # Revoke the access tokens minted alongside the old refresh token.
             for key in [k for k, v in self.store.data["access"].items() if v.get("refresh") == hashed]:
                 del self.store.data["access"][key]
-        return self._issue(client.client_id or "", scopes, refresh_token.resource)
+        return self._issue(
+            client.client_id or "", scopes, refresh_token.resource, refresh_token.subject or access.OWNER
+        )
 
     async def load_access_token(self, token: str) -> AccessToken | None:
         static = self.settings.static_token
         if static and hmac.compare_digest(token.encode(), static.encode()):
-            return AccessToken(token=token, client_id=STATIC_CLIENT_ID, scopes=[], subject="owner")
+            return AccessToken(token=token, client_id=STATIC_CLIENT_ID, scopes=[], subject=access.OWNER)
+        agent = access.agent_for_secret(token)
+        if agent is not None:
+            return AccessToken(
+                token=token, client_id=STATIC_CLIENT_ID + ":" + agent.name, scopes=[], subject=agent.subject
+            )
         raw = self.store.data["access"].get(_hash(token))
         if not raw or raw["expires_at"] < time.time():
             return None
@@ -309,7 +336,7 @@ class VaultOAuthProvider:
             scopes=raw["scopes"],
             expires_at=raw["expires_at"],
             resource=raw.get("resource"),
-            subject="owner",
+            subject=raw.get("subject", access.OWNER),
         )
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:

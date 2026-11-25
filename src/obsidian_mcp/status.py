@@ -200,7 +200,7 @@ def check_vault_git() -> dict[str, Any]:
         return _result("error", f"vault configuration: {exc}")
     if not vaults:
         return _result("not_configured", "OBSIDIAN_VAULT_REMOTE is not set (local vault only)")
-    results = {name: _check_one_vault(v.path.expanduser()) for name, v in vaults.items()}
+    results = {name: _check_one_vault(v.repo.expanduser()) for name, v in vaults.items()}
     if len(results) == 1:
         return next(iter(results.values()))
     worst = max(results.values(), key=lambda r: _RANK.get(r["state"], 3))["state"]

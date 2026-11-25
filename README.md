@@ -182,6 +182,8 @@ locally, e.g. from a cloud sandbox.
 | `OBSIDIAN_VAULT_REMOTE` | *(unset)* | Git URL of the vault repo — enables sync |
 | `OBSIDIAN_VAULT_NAME` | `principal` | Name of the main vault (used by `vault`, see below) |
 | `OBSIDIAN_EXTRA_VAULTS` | *(unset)* | More vaults: `name=repo;name2=repo2` (a local path instead of a URL means no sync) |
+| `OBSIDIAN_AGENTS` | *(unset)* | Agents and their vaults: `agent:vault=rw,vault=r;agent2:...` (see "Agents") |
+| `OBSIDIAN_AGENT_TOKEN_<AGENT>` | *(unset)* | Secret of each agent (32+ characters): login password and bearer token |
 | `OBSIDIAN_VAULTS_DIR` | `vaults` next to `OBSIDIAN_VAULT` | Where extra vaults are cloned (`/data/vaults` in Docker) |
 | `OBSIDIAN_GIT_TOKEN` | *(unset)* | Token for HTTPS git auth (e.g. GitHub fine-grained PAT), shared by every vault |
 | `OBSIDIAN_PULL_INTERVAL` | `30` | Min seconds between automatic pulls; `0` = every call, negative = never |
@@ -205,8 +207,43 @@ Git repo, clone and sync. Every vault tool then takes an optional `vault` argume
   so nothing lands in a vault the user did not pick.
 - `sync_vault()` without `vault` syncs them all; `ecosystem_status` checks every repo.
 
+A vault can also be **one folder of a repository**: end the URL with `#folder`
+(`analyste=https://github.com/me/startup.git#analyste`). Several vaults can share a
+repository this way; each gets its own clone, and a vault never reaches outside its
+folder.
+
 MCP has no session the server could remember the choice in (the protocol is stateless),
 so the choice lives in the conversation: the AI repeats `vault` on each call.
+
+## Agents (logins limited to some vaults)
+
+The owner (login password, `OBSIDIAN_MCP_TOKEN`) sees every vault. An **agent** is an
+AI working for you that must only see its own vaults, for example the roles of an
+agentic start-up. Declare them, then give each one a secret:
+
+```
+OBSIDIAN_AGENTS=analyste:analyste=rw,global=r;ceo:ceo=rw,analyste=r,global=r
+OBSIDIAN_AGENT_TOKEN_ANALYSTE=<openssl rand -hex 32>
+OBSIDIAN_AGENT_TOKEN_CEO=<openssl rand -hex 32>
+```
+
+- `rw` = read and write, `r` = read only. The first `rw` vault is the agent's default:
+  without `vault`, its reads and changes go there.
+- The secret (32+ characters, never the owner's password) works on the login page
+  (claude.ai connector) and as a bearer token
+  (`claude mcp add --transport http ... --header "Authorization: Bearer <secret>"`, or
+  the Agent SDK).
+- Tokens remember who logged in. Every call is checked: vaults not granted do not exist
+  for the agent (`list_vaults` only shows its own, without repository URLs), changes
+  are refused in read-only vaults, `sync_vault` never pushes them, and
+  `ecosystem_status` is refused. The web tools (X, YouTube) stay available.
+- Removing an agent from `OBSIDIAN_AGENTS` cuts its existing tokens off every vault.
+- The server log lists each agent and its rights at startup, and flags a missing or
+  weak secret or an unknown vault.
+
+A claude.ai account keeps one login per connector URL: an agent running in the owner's
+claude.ai account would use the owner's login. Run agents with their own bearer token
+(Claude Code, Agent SDK) or from another account.
 
 ## Tools
 
