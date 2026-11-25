@@ -158,6 +158,18 @@ def use_vault(name: str | None, *, explicit: bool = False) -> Iterator[Vault]:
         _current.reset(token)
 
 
+@contextmanager
+def owner_use_vault(name: str) -> Iterator[Vault]:
+    """Select vault `name` without the agent check: only for server housekeeping
+    (pulling the skills vault), never with a name taken from a tool argument."""
+    vault = get_vault(name)
+    token = _current.set(vault.name)
+    try:
+        yield vault
+    finally:
+        _current.reset(token)
+
+
 def vault_root() -> Path:
     vault = get_vault()
     root = vault.path.resolve()

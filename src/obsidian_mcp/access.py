@@ -4,13 +4,13 @@ The owner (the password of the login page, or `OBSIDIAN_MCP_TOKEN`) sees every v
 as before. An agent is an AI working for the owner (for example the roles of an
 agentic start-up) that must only see its own vaults:
 
-    OBSIDIAN_AGENTS=analyste:analyste=rw,global=r;ceo:ceo=rw,analyste=r,global=r
+    OBSIDIAN_AGENTS=cio:cio=rw,global=r;ceo:ceo=rw,cio=r,global=r
 
 Each entry is ``agent:vault=right,vault=right`` with right ``rw`` (read and write) or
 ``r`` (read only); entries are separated by ``;``. The first ``rw`` vault is the
 agent's default vault. Each agent has one secret, in its own variable:
 
-    OBSIDIAN_AGENT_TOKEN_ANALYSTE=<openssl rand -hex 32>
+    OBSIDIAN_AGENT_TOKEN_CIO=<openssl rand -hex 32>
 
 (name in capitals, ``-`` becomes ``_``). That secret is both the password the agent's
 login page accepts and a bearer token (``Authorization: Bearer ...``) for clients that

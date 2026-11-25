@@ -18,7 +18,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
-from . import access, graphs, links, notes, pdf, status, sync, x_post, x_search, youtube, youtube_search
+from . import access, graphs, links, notes, pdf, skills, status, sync, x_post, x_search, youtube, youtube_search
 from .config import ConfigError, Settings, load_settings
 from .notes import embed_attachment
 from .vault import Vault, VaultError, configured_vaults, use_vault, visible_vaults
@@ -640,7 +640,13 @@ def build_server(settings: Settings) -> MCPServer:
     for fn, annotations in tools:
         if fn is ecosystem_status:
             apps.tool(resource_uri=STATUS_APP_URI, annotations=annotations)(status.tracked(fn))
-    server = MCPServer("obsidian-mcp", instructions=INSTRUCTIONS, extensions=[apps], **kwargs)
+    extensions: list[Any] = [apps]
+    if skills.skills_vault_name():
+        # Skills over MCP: each agent gets the role skills of the skills vault.
+        extensions.append(skills.SkillsExtension())
+    server = MCPServer("obsidian-mcp", instructions=INSTRUCTIONS, extensions=extensions, **kwargs)
+    if skills.skills_vault_name():
+        skills.install(server)
     for fn, annotations in tools:
         if fn is not ecosystem_status:
             server.add_tool(status.tracked(fn), annotations=annotations)

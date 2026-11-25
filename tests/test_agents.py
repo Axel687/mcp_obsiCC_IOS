@@ -103,6 +103,14 @@ def startup(tmp_path: Path):
         "analyste/Etat actuel.md": "# Etat analyste\n",
         "ceo/Etat actuel.md": "# Etat CEO\n",
         "global/Roles/CEO.md": "# Consignes CEO\n",
+        "global/Skills/commun/journaliser/SKILL.md":
+            "---\nname: journaliser\ndescription: Tout noter.\n---\n\n# Journaliser\n",
+        "global/Skills/analyste/questions/SKILL.md":
+            "---\nname: questions\ndescription: Lister les questions.\n---\n\nVoir modele.md\n",
+        "global/Skills/analyste/questions/modele.md": "Q1 ...\n",
+        "global/Skills/ceo/boucler/SKILL.md":
+            "---\nname: boucler\ndescription: Boucler.\n---\n\nAu plus 3 tours.\n",
+        "global/Skills/ceo/mauvais/SKILL.md": "pas de frontmatter\n",
     })
     port = free_port()
     base = f"http://localhost:{port}"
@@ -123,6 +131,7 @@ def startup(tmp_path: Path):
         "OBSIDIAN_AGENTS": "analyste:analyste=rw,global=r;ceo:ceo=rw,analyste=r,global=r",
         "OBSIDIAN_AGENT_TOKEN_ANALYSTE": ANALYSTE,
         "OBSIDIAN_AGENT_TOKEN_CEO": CEO,
+        "OBSIDIAN_SKILLS_VAULT": "global",
         "OBSIDIAN_PULL_INTERVAL": "0",
     }
     proc = subprocess.Popen([sys.executable, "-m", "obsidian_mcp"], env=env,
@@ -199,3 +208,71 @@ def test_agents_end_to_end(startup) -> None:
     names = [v["name"] for v in owner.call("list_vaults")["vaults"]]
     assert names == ["principal", "analyste", "ceo", "global"]
     assert owner.call("read_note", path="Prive")["ok"]
+
+
+META = {
+    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+    "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "0"},
+    "io.modelcontextprotocol/clientCapabilities": {},
+}
+
+
+def modern(client: Mcp, method: str, params: dict | None = None) -> tuple[int, dict]:
+    """A request on the 2026-07-28 revision (the one Skills over MCP needs): no
+    handshake, the version travels in headers and in `_meta`."""
+    client.ids += 1
+    headers = {"Authorization": f"Bearer {client.token}",
+               "Accept": "application/json, text/event-stream",
+               "MCP-Protocol-Version": "2026-07-28", "Mcp-Method": method}
+    if params and "uri" in params:
+        headers["Mcp-Name"] = params["uri"]
+    status, hdrs, body = http("POST", client.url, headers=headers, data={
+        "jsonrpc": "2.0", "id": client.ids, "method": method,
+        "params": {**(params or {}), "_meta": META}})
+    if "text/event-stream" in hdrs.get("content-type", hdrs.get("Content-Type", "")):
+        msgs = [json.loads(l[5:]) for l in body.splitlines() if l.startswith("data:") and l[5:].strip()]
+        return status, [m for m in msgs if m.get("id") == client.ids][-1]
+    return status, json.loads(body)
+
+
+def skills_list(client: Mcp) -> list[dict]:
+    status, res = modern(client, "skills/list")
+    assert status == 200 and "result" in res, res
+    assert res["result"]["resultType"] == "complete"
+    return res["result"]["skills"]
+
+
+def test_skills_per_agent(startup) -> None:
+    base = startup["base"]
+    analyste = Mcp(base, ANALYSTE)
+    status, res = modern(analyste, "server/discover")
+    assert "io.modelcontextprotocol/skills" in res["result"]["capabilities"]["extensions"], res
+
+    listed = {s["frontmatter"]["name"]: s for s in skills_list(analyste)}
+    assert set(listed) == {"journaliser", "questions"}  # common + its own, not the CEO's
+    q = listed["questions"]
+    assert q["uri"] == "skill://analyste/questions/SKILL.md"
+    files = {r["uri"]: r for r in q["resources"]}
+    assert set(files) == {"skill://analyste/questions/SKILL.md", "skill://analyste/questions/modele.md"}
+    body = "---\nname: questions\ndescription: Lister les questions.\n---\n\nVoir modele.md\n"
+    import hashlib
+    assert files["skill://analyste/questions/SKILL.md"]["digest"] == "sha256:" + hashlib.sha256(body.encode()).hexdigest()
+
+    status, res = modern(analyste, "skills/get", {"uri": "skill://analyste/questions/SKILL.md"})
+    assert res["result"]["skill"]["frontmatter"]["description"] == "Lister les questions."
+    status, res = modern(analyste, "resources/read", {"uri": "skill://analyste/questions/modele.md"})
+    assert res["result"]["contents"][0]["text"] == "Q1 ...\n"
+
+    # Another role's skill is invisible, by get and by read.
+    status, res = modern(analyste, "skills/get", {"uri": "skill://ceo/boucler/SKILL.md"})
+    assert res["error"]["code"] == -32602, res
+    status, res = modern(analyste, "resources/read", {"uri": "skill://ceo/boucler/SKILL.md"})
+    assert "error" in res, res
+    status, res = modern(analyste, "resources/read", {"uri": "skill://analyste/../ceo/boucler/SKILL.md"})
+    assert "error" in res, res
+
+    # The CEO sees its own (a malformed skill is skipped); the owner sees none.
+    ceo = Mcp(base, CEO)
+    assert {s["frontmatter"]["name"] for s in skills_list(ceo)} == {"journaliser", "boucler"}
+    owner = Mcp(base, STATIC_TOKEN)
+    assert skills_list(owner) == []
